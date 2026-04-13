@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package deckhouse.v1;
+
+option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deckhousev1";
+
+import "mcp/options/v1/options.proto";
+
+service NodesAPI {
+  option (mcp.options.v1.service) = {
+    namespace: "deckhouse"
+    description: "Node management: add nodes, create SSH credentials and static instances."
+  };
+
+  // AddWorkerNode is a composite handler that adds a worker node to the cluster.
+  rpc AddWorkerNode(AddWorkerNodeRequest) returns (AddWorkerNodeResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Add worker node"
+      description: "Composite operation that adds a bare-metal server as a Deckhouse worker node. Steps: (1) create SSHCredentials with the provided key, (2) create StaticInstance bound to that credential and the target NodeGroup. If wait_ready is true (default), polls every 30s until the StaticInstance reaches Running phase or the timeout expires — returns last observed phase and timed_out flag. If step 1 fails, step 2 is not attempted. If step 2 fails, the SSHCredentials resource from step 1 still exists."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // CreateSSHCredentials creates an SSHCredentials resource.
+  rpc CreateSSHCredentials(CreateSSHCredentialsRequest) returns (CreateSSHCredentialsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create SSH credentials"
+      description: "Create an SSHCredentials resource in the d8-system namespace. The private key must be in PEM format (RSA, ED25519, or ECDSA); it is base64-encoded internally before storing in the Kubernetes Secret. The sudo_password field is optional and only needed when the remote user requires a password for sudo."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // CreateStaticInstance creates a StaticInstance resource.
+  rpc CreateStaticInstance(CreateStaticInstanceRequest) returns (CreateStaticInstanceResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create static instance"
+      description: "Create a StaticInstance resource bound to SSHCredentials via credentialsRef."
+      annotations: { destructive_hint: true }
+    };
+  }
+}
+
+// AddWorkerNodeRequest contains parameters for the composite add-node operation.
+message AddWorkerNodeRequest {
+  string address = 1 [(mcp.options.v1.field) = {
+    description: "IP address of the server to add."
+    format: "ipv4"
+    examples: [{ string_value: "192.168.1.100" }]
+  }];
+  string ssh_user = 2 [(mcp.options.v1.field) = {
+    description: "SSH username for connecting to the server."
+    examples: [{ string_value: "ubuntu" }, { string_value: "root" }]
+  }];
+  string private_key = 3 [(mcp.options.v1.field) = {
+    description: "Private SSH key in PEM format (RSA, ED25519, or ECDSA). Must NOT be base64-encoded — encoding is done internally."
+    examples: [{ string_value: "-----BEGIN OPENSSH PRIVATE KEY-----\n..." }]
+  }];
+  string node_group = 4 [(mcp.options.v1.field) = {
+    description: "Name of the target NodeGroup. Must be an existing NodeGroup with nodeType: Static."
+    examples: [{ string_value: "worker" }]
+  }];
+  optional string node_name = 5 [(mcp.options.v1.field) = {
+    description: "Name for the node. If omitted, generated from IP address (dots replaced with dashes, e.g. 192-168-1-100)."
+    examples: [{ string_value: "worker-1" }]
+  }];
+  optional int32 ssh_port = 6 [(mcp.options.v1.field) = {
+    description: "SSH port. Default: 22."
+    default_value: { number_value: 22 }
+    minimum: 1
+    maximum: 65535
+  }];
+  optional bool wait_ready = 7 [(mcp.options.v1.field) = {
+    description: "Wait for the StaticInstance to reach Running phase. Default: true. When false, returns immediately after creating resources."
+    default_value: { bool_value: true }
+  }];
+  optional int32 timeout_seconds = 8 [(mcp.options.v1.field) = {
+    description: "Timeout in seconds for waiting. Default: 900 (15 minutes). Ignored when wait_ready is false."
+    default_value: { number_value: 900 }
+    minimum: 1
+    maximum: 3600
+  }];
+}
+
+message AddWorkerNodeResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the composite AddWorkerNode operation."
+  };
+
+  string node_name = 1 [(mcp.options.v1.field) = { description: "Name assigned to the node." }];
+  string ssh_credentials_name = 2 [(mcp.options.v1.field) = { description: "Name of the created SSHCredentials resource." }];
+  string static_instance_name = 3 [(mcp.options.v1.field) = { description: "Name of the created StaticInstance resource." }];
+  string phase = 4 [(mcp.options.v1.field) = {
+    description: "Final observed phase of the StaticInstance: Pending, Bootstrapping, Running, or Error."
+    examples: [{ string_value: "Running" }, { string_value: "Pending" }]
+  }];
+  string elapsed = 5 [(mcp.options.v1.field) = {
+    description: "Wall-clock time spent waiting (e.g. 45s, 2m30s). Empty if waitReady was false."
+    examples: [{ string_value: "45s" }, { string_value: "2m30s" }]
+  }];
+  bool timed_out = 6 [(mcp.options.v1.field) = {
+    description: "True if the operation timed out before the StaticInstance reached Running phase."
+  }];
+}
+
+// CreateSSHCredentialsRequest contains parameters for SSHCredentials creation.
+message CreateSSHCredentialsRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the SSHCredentials resource."
+    examples: [{ string_value: "worker-1-ssh" }]
+  }];
+  string user = 2 [(mcp.options.v1.field) = {
+    description: "SSH username for connecting to the server."
+    examples: [{ string_value: "ubuntu" }, { string_value: "root" }]
+  }];
+  string private_key = 3 [(mcp.options.v1.field) = {
+    description: "Private SSH key in PEM format (RSA, ED25519, or ECDSA). Base64 encoding is done internally."
+    examples: [{ string_value: "-----BEGIN OPENSSH PRIVATE KEY-----\n..." }]
+  }];
+  optional int32 port = 4 [(mcp.options.v1.field) = {
+    description: "SSH port. Default: 22."
+    default_value: { number_value: 22 }
+    minimum: 1
+    maximum: 65535
+  }];
+  optional string ssh_extra_args = 5 [(mcp.options.v1.field) = {
+    description: "Additional SSH client arguments (e.g. -o StrictHostKeyChecking=no)."
+    examples: [{ string_value: "-o StrictHostKeyChecking=no" }]
+  }];
+  optional string sudo_password = 6 [(mcp.options.v1.field) = {
+    description: "Sudo password. Only required when the remote SSH user needs a password for sudo privilege escalation."
+  }];
+}
+
+message CreateSSHCredentialsResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of SSHCredentials creation."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = { description: "Name of the created SSHCredentials resource." }];
+}
+
+// CreateStaticInstanceRequest contains parameters for StaticInstance creation.
+message CreateStaticInstanceRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the StaticInstance."
+    examples: [{ string_value: "worker-1" }]
+  }];
+  string address = 2 [(mcp.options.v1.field) = {
+    description: "IP address of the server."
+    format: "ipv4"
+    examples: [{ string_value: "192.168.1.100" }]
+  }];
+  string credentials_ref = 3 [(mcp.options.v1.field) = {
+    description: "Name of the SSHCredentials resource to reference. Must exist in d8-system namespace."
+    examples: [{ string_value: "worker-1-ssh" }]
+  }];
+  map<string, string> labels = 4 [(mcp.options.v1.field) = {
+    description: "Labels for binding to NodeGroup via labelSelector. Must match the NodeGroup's nodeSelector."
+  }];
+}
+
+message CreateStaticInstanceResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of StaticInstance creation."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = { description: "Name of the created StaticInstance resource." }];
+  string address = 2 [(mcp.options.v1.field) = {
+    description: "IP address of the server."
+    format: "ipv4"
+  }];
+  string credentials_ref = 3 [(mcp.options.v1.field) = { description: "Name of the referenced SSHCredentials resource." }];
+  map<string, string> labels = 4 [(mcp.options.v1.field) = {
+    description: "Labels applied to the StaticInstance for NodeGroup binding."
+  }];
+}

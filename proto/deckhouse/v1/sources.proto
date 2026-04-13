@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package deckhouse.v1;
+
+option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deckhousev1";
+
+import "mcp/options/v1/options.proto";
+
+// SourcesAPI — module source and update policy management.
+// Not yet implemented. Planned for P2+ priority.
+service SourcesAPI {
+  option (mcp.options.v1.service) = {
+    namespace: "deckhouse"
+    description: "Module source and update policy management."
+  };
+}

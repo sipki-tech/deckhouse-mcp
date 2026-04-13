@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package deckhouse.v1;
+
+option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deckhousev1";
+
+import "mcp/options/v1/options.proto";
+
+service ModulesAPI {
+  option (mcp.options.v1.service) = {
+    namespace: "deckhouse"
+    description: "ModuleConfig management: list, enable, disable modules."
+  };
+
+  // ListModuleConfigs returns all ModuleConfig resources.
+  rpc ListModuleConfigs(ListModuleConfigsRequest) returns (ListModuleConfigsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "List module configs"
+      description: "List all ModuleConfig resources with optional filtering by enabled status."
+      annotations: { read_only_hint: true }
+    };
+  }
+}
+
+// ListModuleConfigsRequest contains optional filters.
+message ListModuleConfigsRequest {
+  optional bool enabled = 1 [(mcp.options.v1.field) = {
+    description: "Filter by enabled/disabled status."
+  }];
+}
+
+message ListModuleConfigsResponse {
+  repeated ModuleConfigInfo modules = 1 [(mcp.options.v1.field) = {
+    description: "ModuleConfig resources matching the filter criteria."
+  }];
+}
+
+message ModuleConfigInfo {
+  option (mcp.options.v1.message) = {
+    description: "Deckhouse ModuleConfig resource controlling a platform module."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleConfig resource name (same as the module name, e.g. cert-manager, ingress-nginx)."
+    examples: [{ string_value: "cert-manager" }, { string_value: "ingress-nginx" }]
+  }];
+  bool enabled = 2 [(mcp.options.v1.field) = {
+    description: "Whether the module is enabled in the cluster."
+  }];
+  string version = 3 [(mcp.options.v1.field) = {
+    description: "Schema version of the module settings."
+    examples: [{ string_value: "1" }, { string_value: "2" }]
+  }];
+  string source = 4 [(mcp.options.v1.field) = {
+    description: "ModuleSource that provides this module. Empty for built-in Deckhouse modules."
+  }];
+  string update_policy = 5 [(mcp.options.v1.field) = {
+    description: "Name of the ModuleUpdatePolicy applied to this module. Empty if none."
+  }];
+  string status_message = 6 [(mcp.options.v1.field) = {
+    description: "Human-readable status or error message from the ModuleConfig status."
+  }];
+}

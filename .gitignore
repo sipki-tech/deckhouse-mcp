@@ -1,0 +1,17 @@
+# Agent artifacts
+.agents/
+.spec/
+AGENTS.md
+skills-lock.json
+mcp-handlers-full.md
+
+# Binary
+deckhouse-mcp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store

@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deckhouse-mcp
+  namespace: d8-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: d8:deckhouse-mcp
+rules:
+  # Core resources — read-only
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Deckhouse CRDs — read-only
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - nodegroups
+      - staticinstances
+      - moduleconfigs
+      - deckhouserelease
+    verbs: ["get", "list"]
+  # Deckhouse CRDs — write (P0 handlers)
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - staticinstances
+      - sshcredentials
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: d8:deckhouse-mcp
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: d8:deckhouse-mcp
+subjects:
+  - kind: ServiceAccount
+    name: deckhouse-mcp
+    namespace: d8-system
