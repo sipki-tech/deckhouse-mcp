@@ -13,6 +13,9 @@ import (
 // ModulesAPIToolHandler defines the business logic required by generated MCP tools.
 type ModulesAPIToolHandler interface {
 	ListModuleConfigs(ctx context.Context, req *ListModuleConfigsRequest) (*ListModuleConfigsResponse, error)
+	GetModuleConfig(ctx context.Context, req *GetModuleConfigRequest) (*GetModuleConfigResponse, error)
+	EnableModule(ctx context.Context, req *EnableModuleRequest) (*EnableModuleResponse, error)
+	DisableModule(ctx context.Context, req *DisableModuleRequest) (*DisableModuleResponse, error)
 }
 
 // RegisterModulesAPITools registers generated MCP tools for ModulesAPI.
@@ -35,9 +38,66 @@ func RegisterModulesAPITools(server *mcp.Server, impl ModulesAPIToolHandler, opt
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetModuleConfigRequest, *GetModuleConfigResponse]{
+		Name:             "GetModuleConfig",
+		Title:            "Get module config",
+		Description:      "Full spec and status of a single ModuleConfig including enabled state, version, settings (as a JSON object), and status conditions.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_GetModuleConfig_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_GetModuleConfig_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetModuleConfigRequest { return &GetModuleConfigRequest{} },
+		NewResponse:      func() *GetModuleConfigResponse { return &GetModuleConfigResponse{} },
+		Handler:          impl.GetModuleConfig,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*EnableModuleRequest, *EnableModuleResponse]{
+		Name:             "EnableModule",
+		Title:            "Enable module",
+		Description:      "Enable a Deckhouse module by setting spec.enabled=true in its ModuleConfig. Returns the previous enabled state. Safe to call when already enabled.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_EnableModule_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_EnableModule_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{IdempotentHint: true},
+		Icons:            nil,
+		NewRequest:       func() *EnableModuleRequest { return &EnableModuleRequest{} },
+		NewResponse:      func() *EnableModuleResponse { return &EnableModuleResponse{} },
+		Handler:          impl.EnableModule,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DisableModuleRequest, *DisableModuleResponse]{
+		Name:             "DisableModule",
+		Title:            "Disable module",
+		Description:      "Disable a Deckhouse module by setting spec.enabled=false in its ModuleConfig. Returns the previous enabled state. Safe to call when already disabled.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_DisableModule_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_DisableModule_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{IdempotentHint: true},
+		Icons:            nil,
+		NewRequest:       func() *DisableModuleRequest { return &DisableModuleRequest{} },
+		NewResponse:      func() *DisableModuleResponse { return &DisableModuleResponse{} },
+		Handler:          impl.DisableModule,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
 const ModulesAPI_ListModuleConfigs_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"enabled\":{\"type\":[\"boolean\",\"null\"],\"description\":\"Filter by enabled/disabled status.\",\"examples\":[true]}},\"description\":\"ListModuleConfigsRequest contains optional filters.\",\"examples\":[{\"enabled\":true}],\"additionalProperties\":false}"
 
 const ModulesAPI_ListModuleConfigs_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"modules\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"enabled\":{\"type\":\"boolean\",\"description\":\"Whether the module is enabled in the cluster.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name, e.g. cert-manager, ingress-nginx).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"]},\"source\":{\"type\":\"string\",\"description\":\"ModuleSource that provides this module. Empty for built-in Deckhouse modules.\",\"examples\":[\"example\"]},\"statusMessage\":{\"type\":\"string\",\"description\":\"Human-readable status or error message from the ModuleConfig status.\",\"examples\":[\"example\"]},\"updatePolicy\":{\"type\":\"string\",\"description\":\"Name of the ModuleUpdatePolicy applied to this module. Empty if none.\",\"examples\":[\"example\"]},\"version\":{\"type\":\"string\",\"description\":\"Schema version of the module settings.\",\"examples\":[\"1\",\"2\"]}},\"description\":\"ModuleConfig resources matching the filter criteria.\\n\\nDeckhouse ModuleConfig resource controlling a platform module.\",\"examples\":[{\"enabled\":true,\"name\":\"example\",\"source\":\"example\",\"statusMessage\":\"example\",\"updatePolicy\":\"example\",\"version\":\"example\"}],\"required\":[\"name\",\"enabled\",\"version\",\"source\",\"updatePolicy\",\"statusMessage\"],\"additionalProperties\":false},\"description\":\"ModuleConfig resources matching the filter criteria.\\n\\nDeckhouse ModuleConfig resource controlling a platform module.\",\"examples\":[[{\"enabled\":true,\"name\":\"example\",\"source\":\"example\",\"statusMessage\":\"example\",\"updatePolicy\":\"example\",\"version\":\"example\"}]]}},\"examples\":[{\"modules\":[{\"enabled\":true,\"name\":\"example\",\"source\":\"example\",\"statusMessage\":\"example\",\"updatePolicy\":\"example\",\"version\":\"example\"}]}],\"additionalProperties\":false}"
+
+const ModulesAPI_GetModuleConfig_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name, e.g. cert-manager).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1}},\"description\":\"GetModuleConfigRequest contains the module name.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const ModulesAPI_GetModuleConfig_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"enabled\":{\"type\":\"boolean\",\"description\":\"Whether the module is enabled.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name.\",\"examples\":[\"example\"]},\"settings\":{\"type\":[\"object\",\"null\"],\"description\":\"Module settings as key-value pairs (from spec.settings).\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"statusMessage\":{\"type\":\"string\",\"description\":\"Human-readable status or error message from ModuleConfig status.\",\"examples\":[\"example\"]},\"version\":{\"type\":[\"integer\",\"null\"],\"description\":\"Schema version of the module settings.\",\"examples\":[-1],\"minimum\":1}},\"description\":\"Full spec and status of a Deckhouse ModuleConfig.\",\"examples\":[{\"enabled\":true,\"name\":\"example\",\"settings\":{\"key\":\"example\"},\"statusMessage\":\"example\",\"version\":-1}],\"required\":[\"name\",\"enabled\",\"statusMessage\"],\"additionalProperties\":false}"
+
+const ModulesAPI_EnableModule_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1}},\"description\":\"EnableModuleRequest contains the module name to enable.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const ModulesAPI_EnableModule_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"previousState\":{\"type\":\"boolean\",\"description\":\"Previous value of spec.enabled before this call.\",\"examples\":[true]},\"success\":{\"type\":\"boolean\",\"description\":\"Whether the operation succeeded.\",\"examples\":[true]}},\"description\":\"Result of the enable module operation.\",\"examples\":[{\"previousState\":true,\"success\":true}],\"required\":[\"success\",\"previousState\"],\"additionalProperties\":false}"
+
+const ModulesAPI_DisableModule_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1}},\"description\":\"DisableModuleRequest contains the module name to disable.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const ModulesAPI_DisableModule_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"previousState\":{\"type\":\"boolean\",\"description\":\"Previous value of spec.enabled before this call.\",\"examples\":[true]},\"success\":{\"type\":\"boolean\",\"description\":\"Whether the operation succeeded.\",\"examples\":[true]}},\"description\":\"Result of the disable module operation.\",\"examples\":[{\"previousState\":true,\"success\":true}],\"required\":[\"success\",\"previousState\"],\"additionalProperties\":false}"

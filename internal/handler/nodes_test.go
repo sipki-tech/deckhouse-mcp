@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -361,3 +362,240 @@ func containsStr(s, substr string) bool {
 
 // Ensure metav1 import is used.
 var _ = metav1.Now()
+
+func TestDeleteStaticInstance_Success(t *testing.T) {
+	deleted := false
+	mc := &mockClient{
+		deleteStaticInstanceFunc: func(_ context.Context, name string) error {
+			deleted = true
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.DeleteStaticInstance(context.Background(), &pb.DeleteStaticInstanceRequest{Name: "node-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success {
+		t.Error("expected success=true")
+	}
+	if !deleted {
+		t.Error("expected deleteStaticInstance to be called")
+	}
+}
+
+func TestDeleteStaticInstance_NotFound(t *testing.T) {
+	mc := &mockClient{
+		deleteStaticInstanceFunc: func(_ context.Context, name string) error {
+			return fmt.Errorf("static instance %q not found", name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.DeleteStaticInstance(context.Background(), &pb.DeleteStaticInstanceRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestRemoveNode_DrainAndDelete(t *testing.T) {
+	cordoned := false
+	deleted := false
+	podDeleted := false
+	si := makeStaticInstance("node-1", "10.0.0.1", "Running", "workers")
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			return &si, nil
+		},
+		getNodeFunc: func(_ context.Context, _ string) (*corev1.Node, error) {
+			n := makeNode("node-1", true)
+			return &n, nil
+		},
+		cordonNodeFunc: func(_ context.Context, _ string) error {
+			cordoned = true
+			return nil
+		},
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			pod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "app-pod", Namespace: "default"},
+				Spec:       corev1.PodSpec{NodeName: "node-1"},
+			}
+			return []corev1.Pod{pod}, nil
+		},
+		deletePodFunc: func(_ context.Context, _, _ string) error {
+			podDeleted = true
+			return nil
+		},
+		deleteStaticInstanceFunc: func(_ context.Context, _ string) error {
+			deleted = true
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	drain := true
+	resp, err := h.RemoveNode(context.Background(), &pb.RemoveNodeRequest{Name: "node-1", Drain: &drain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Deleted {
+		t.Error("expected deleted=true")
+	}
+	if !cordoned {
+		t.Error("expected cordon to be called when drain=true")
+	}
+	if !podDeleted {
+		t.Error("expected pod deletion when drain=true")
+	}
+	if !deleted {
+		t.Error("expected deleteStaticInstance to be called")
+	}
+}
+
+func TestRemoveNode_NoDrain(t *testing.T) {
+	cordoned := false
+	si := makeStaticInstance("node-1", "10.0.0.1", "Running", "workers")
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			return &si, nil
+		},
+		getNodeFunc: func(_ context.Context, _ string) (*corev1.Node, error) {
+			n := makeNode("node-1", true)
+			return &n, nil
+		},
+		cordonNodeFunc: func(_ context.Context, _ string) error {
+			cordoned = true
+			return nil
+		},
+		deleteStaticInstanceFunc: func(_ context.Context, _ string) error {
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	drain := false
+	_, err := h.RemoveNode(context.Background(), &pb.RemoveNodeRequest{Name: "node-1", Drain: &drain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cordoned {
+		t.Error("expected cordon NOT called when drain=false")
+	}
+}
+
+func TestRemoveNode_NoStaticInstance(t *testing.T) {
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("not found: %s", name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.RemoveNode(context.Background(), &pb.RemoveNodeRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestCreateNodeGroup_Success(t *testing.T) {
+	mc := &mockClient{
+		createNodeGroupFunc: func(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			return obj, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.CreateNodeGroup(context.Background(), &pb.CreateNodeGroupRequest{
+		Name:     "workers",
+		NodeType: "Static",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Name != "workers" {
+		t.Errorf("expected workers, got %s", resp.Name)
+	}
+}
+
+func TestCreateNodeGroup_AlreadyExists(t *testing.T) {
+	mc := &mockClient{
+		createNodeGroupFunc: func(_ context.Context, _ *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			return nil, errors.NewAlreadyExists(schema.GroupResource{Group: "deckhouse.io", Resource: "nodegroups"}, "workers")
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CreateNodeGroup(context.Background(), &pb.CreateNodeGroupRequest{
+		Name:     "workers",
+		NodeType: "Static",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestWaitNodeReady_Success(t *testing.T) {
+	pollCount := 0
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			pollCount++
+			phase := "Bootstrapping"
+			if pollCount >= 2 {
+				phase = "Running"
+			}
+			obj := &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"status": map[string]interface{}{
+						"currentStatus": map[string]interface{}{
+							"phase": phase,
+						},
+					},
+				},
+			}
+			return obj, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	timeout := int32(5)
+	resp, err := h.WaitNodeReady(context.Background(), &pb.WaitNodeReadyRequest{Name: "node-1", TimeoutSeconds: &timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Phase != "Running" {
+		t.Errorf("expected Running, got %s", resp.Phase)
+	}
+	if resp.TimedOut {
+		t.Error("expected timedOut=false")
+	}
+}
+
+func TestWaitNodeReady_Timeout(t *testing.T) {
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			return &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"status": map[string]interface{}{
+						"currentStatus": map[string]interface{}{
+							"phase": "Bootstrapping",
+						},
+					},
+				},
+			}, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	timeout := int32(1)
+	resp, err := h.WaitNodeReady(context.Background(), &pb.WaitNodeReadyRequest{Name: "node-1", TimeoutSeconds: &timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.TimedOut {
+		t.Error("expected timedOut=true")
+	}
+	if resp.Phase != "Bootstrapping" {
+		t.Errorf("expected Bootstrapping, got %s", resp.Phase)
+	}
+}

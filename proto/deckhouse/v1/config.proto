@@ -7,10 +7,32 @@ option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deck
 import "mcp/options/v1/options.proto";
 
 // ConfigAPI — cluster configuration management.
-// Not yet implemented. Planned for P1+ priority.
 service ConfigAPI {
   option (mcp.options.v1.service) = {
     namespace: "deckhouse"
     description: "Cluster configuration management."
   };
+
+  // GetClusterConfiguration reads the current ClusterConfiguration from the cluster.
+  rpc GetClusterConfiguration(GetClusterConfigurationRequest) returns (GetClusterConfigurationResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Get cluster configuration"
+      description: "Read the full ClusterConfiguration from the d8-cluster-configuration Secret in kube-system. Returns the raw YAML string."
+      annotations: { read_only_hint: true }
+    };
+  }
+}
+
+// GetClusterConfigurationRequest is empty — no parameters needed.
+message GetClusterConfigurationRequest {}
+
+// GetClusterConfigurationResponse contains the cluster configuration YAML.
+message GetClusterConfigurationResponse {
+  option (mcp.options.v1.message) = {
+    description: "ClusterConfiguration read from the cluster Secret."
+  };
+
+  string configuration = 1 [(mcp.options.v1.field) = {
+    description: "ClusterConfiguration YAML content from d8-cluster-configuration Secret."
+  }];
 }

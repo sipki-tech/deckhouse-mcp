@@ -16,6 +16,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # Core resources — cluster configuration (read-only)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["d8-cluster-configuration"]
+  # Core resources — node management (P1 write)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["update", "patch"]
   # Deckhouse CRDs — read-only
   - apiGroups: ["deckhouse.io"]
     resources:
@@ -30,6 +39,23 @@ rules:
       - staticinstances
       - sshcredentials
     verbs: ["create"]
+  # Deckhouse CRDs — write (P1 handlers)
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - staticinstances
+    verbs: ["delete"]
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - nodegroups
+    verbs: ["create"]
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - moduleconfigs
+    verbs: ["update"]
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - deckhouserelease
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

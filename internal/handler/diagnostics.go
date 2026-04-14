@@ -426,3 +426,160 @@ func getString(m map[string]interface{}, key string) string {
 	}
 	return ""
 }
+
+// GetNode returns detailed information about a specific node.
+func (h *DiagnosticsHandler) GetNode(ctx context.Context, req *pb.GetNodeRequest) (*pb.GetNodeResponse, error) {
+	node, err := h.client.GetNode(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("getting node %s: %w", req.Name, err)
+	}
+
+	info := nodeToInfo(node)
+
+	// Map node conditions.
+	var conditions []*pb.NodeCondition
+	for _, c := range node.Status.Conditions {
+		conditions = append(conditions, &pb.NodeCondition{
+			Type:    string(c.Type),
+			Status:  string(c.Status),
+			Message: c.Message,
+		})
+	}
+
+	// Map allocatable and capacity resources.
+	allocatable := make(map[string]string)
+	for res, qty := range node.Status.Allocatable {
+		allocatable[string(res)] = qty.String()
+	}
+	capacity := make(map[string]string)
+	for res, qty := range node.Status.Capacity {
+		capacity[string(res)] = qty.String()
+	}
+
+	// Try to get StaticInstance phase for this node (may not exist for cloud nodes).
+	var siPhase *string
+	si, err := h.client.GetStaticInstance(ctx, req.Name)
+	if err == nil && si != nil {
+		phase, _, _ := unstructuredNestedString(si.Object, "status", "currentStatus", "phase")
+		if phase != "" {
+			siPhase = &phase
+		}
+	}
+	// Ignore error — cloud nodes have no StaticInstance.
+
+	// Fetch last 10 events for this node.
+	rawEvents, _ := h.client.ListNodeEvents(ctx, req.Name)
+	var events []*pb.NodeEvent
+	for _, e := range rawEvents {
+		events = append(events, &pb.NodeEvent{
+			Reason:   e.Reason,
+			Message:  e.Message,
+			Type:     e.Type,
+			LastTime: e.LastTimestamp.UTC().Format(time.RFC3339),
+			Count:    e.Count,
+		})
+	}
+
+	return &pb.GetNodeResponse{
+		Node:                info,
+		Conditions:          conditions,
+		Allocatable:         allocatable,
+		Capacity:            capacity,
+		StaticInstancePhase: siPhase,
+		Events:              events,
+	}, nil
+}
+
+// GetNodeGroup returns detailed information about a specific NodeGroup including member node names.
+func (h *DiagnosticsHandler) GetNodeGroup(ctx context.Context, req *pb.GetNodeGroupRequest) (*pb.GetNodeGroupResponse, error) {
+	ng, err := h.client.GetNodeGroup(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("getting node group %s: %w", req.Name, err)
+	}
+
+	name, _, _ := unstructuredNestedString(ng.Object, "metadata", "name")
+	nodeType, _, _ := unstructuredNestedString(ng.Object, "spec", "nodeType")
+	ngReady, _, _ := unstructuredNestedInt64(ng.Object, "status", "ready")
+	ngTotal, _, _ := unstructuredNestedInt64(ng.Object, "status", "nodes")
+	upToDate, _, _ := unstructuredNestedInt64(ng.Object, "status", "upToDate")
+	statusMsg, _, _ := unstructuredNestedString(ng.Object, "status", "error")
+
+	// Collect node names that belong to this group.
+	nodes, err := h.client.ListNodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing nodes for group %s: %w", req.Name, err)
+	}
+
+	var nodeNames []string
+	for _, n := range nodes {
+		if n.Labels["node.deckhouse.io/group"] == name {
+			nodeNames = append(nodeNames, n.Name)
+		}
+	}
+
+	return &pb.GetNodeGroupResponse{
+		Name:          name,
+		NodeType:      nodeType,
+		Ready:         int32(ngReady),
+		Total:         int32(ngTotal),
+		UpToDate:      int32(upToDate),
+		StatusMessage: statusMsg,
+		NodeNames:     nodeNames,
+	}, nil
+}
+
+// GetDeckhouseLogs retrieves the Deckhouse controller pod logs with optional filtering.
+func (h *DiagnosticsHandler) GetDeckhouseLogs(ctx context.Context, req *pb.GetDeckhouseLogsRequest) (*pb.GetDeckhouseLogsResponse, error) {
+	pods, err := h.client.ListPods(ctx, "d8-system")
+	if err != nil {
+		return nil, fmt.Errorf("listing pods in d8-system: %w", err)
+	}
+
+	// Find the main Deckhouse controller pod.
+	var podName string
+	for _, p := range pods {
+		if p.Labels["app"] == "deckhouse" {
+			podName = p.Name
+			break
+		}
+	}
+	if podName == "" {
+		return nil, fmt.Errorf("deckhouse pod not found in d8-system namespace")
+	}
+
+	// Convert tail and since to client types.
+	var tailLines *int64
+	if req.Tail != nil {
+		lines := int64(*req.Tail)
+		tailLines = &lines
+	}
+	var since *string
+	if req.Since != nil {
+		since = req.Since
+	}
+
+	logs, err := h.client.GetPodLogs(ctx, "d8-system", podName, "deckhouse", tailLines, since)
+	if err != nil {
+		return nil, fmt.Errorf("getting pod logs for %s: %w", podName, err)
+	}
+
+	// Apply client-side grep filter if provided.
+	if req.Grep != nil && *req.Grep != "" {
+		pattern := *req.Grep
+		var filtered []string
+		for _, line := range strings.Split(logs, "\n") {
+			if strings.Contains(line, pattern) {
+				filtered = append(filtered, line)
+			}
+		}
+		// Re-join with "\n" suffix on each line to preserve log format.
+		var b strings.Builder
+		for _, line := range filtered {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		logs = b.String()
+	}
+
+	return &pb.GetDeckhouseLogsResponse{Logs: logs}, nil
+}

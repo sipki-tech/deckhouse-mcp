@@ -16,6 +16,10 @@ type NodesAPIToolHandler interface {
 	AddWorkerNode(ctx context.Context, req *AddWorkerNodeRequest) (*AddWorkerNodeResponse, error)
 	CreateSSHCredentials(ctx context.Context, req *CreateSSHCredentialsRequest) (*CreateSSHCredentialsResponse, error)
 	CreateStaticInstance(ctx context.Context, req *CreateStaticInstanceRequest) (*CreateStaticInstanceResponse, error)
+	DeleteStaticInstance(ctx context.Context, req *DeleteStaticInstanceRequest) (*DeleteStaticInstanceResponse, error)
+	RemoveNode(ctx context.Context, req *RemoveNodeRequest) (*RemoveNodeResponse, error)
+	CreateNodeGroup(ctx context.Context, req *CreateNodeGroupRequest) (*CreateNodeGroupResponse, error)
+	WaitNodeReady(ctx context.Context, req *WaitNodeReadyRequest) (*WaitNodeReadyResponse, error)
 }
 
 // RegisterNodesAPITools registers generated MCP tools for NodesAPI.
@@ -68,6 +72,66 @@ func RegisterNodesAPITools(server *mcp.Server, impl NodesAPIToolHandler, opts ..
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DeleteStaticInstanceRequest, *DeleteStaticInstanceResponse]{
+		Name:             "DeleteStaticInstance",
+		Title:            "Delete static instance",
+		Description:      "Delete a StaticInstance resource by name. Deckhouse will gracefully clean up the node.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_DeleteStaticInstance_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_DeleteStaticInstance_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *DeleteStaticInstanceRequest { return &DeleteStaticInstanceRequest{} },
+		NewResponse:      func() *DeleteStaticInstanceResponse { return &DeleteStaticInstanceResponse{} },
+		Handler:          impl.DeleteStaticInstance,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*RemoveNodeRequest, *RemoveNodeResponse]{
+		Name:             "RemoveNode",
+		Title:            "Remove node",
+		Description:      "Composite: cordon the node, evict all non-DaemonSet pods, then delete the associated StaticInstance. Returns error if no StaticInstance is found for the node (static nodes only).",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_RemoveNode_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_RemoveNode_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *RemoveNodeRequest { return &RemoveNodeRequest{} },
+		NewResponse:      func() *RemoveNodeResponse { return &RemoveNodeResponse{} },
+		Handler:          impl.RemoveNode,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*CreateNodeGroupRequest, *CreateNodeGroupResponse]{
+		Name:             "CreateNodeGroup",
+		Title:            "Create node group",
+		Description:      "Create a new NodeGroup resource. In Deckhouse CE only 'Static' nodeType is supported.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_CreateNodeGroup_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_CreateNodeGroup_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *CreateNodeGroupRequest { return &CreateNodeGroupRequest{} },
+		NewResponse:      func() *CreateNodeGroupResponse { return &CreateNodeGroupResponse{} },
+		Handler:          impl.CreateNodeGroup,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*WaitNodeReadyRequest, *WaitNodeReadyResponse]{
+		Name:             "WaitNodeReady",
+		Title:            "Wait node ready",
+		Description:      "Poll StaticInstance.status.currentStatus.phase until it reaches 'Running' or timeout. Returns the final phase, elapsed time, and whether timeout occurred.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_WaitNodeReady_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_WaitNodeReady_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *WaitNodeReadyRequest { return &WaitNodeReadyRequest{} },
+		NewResponse:      func() *WaitNodeReadyResponse { return &WaitNodeReadyResponse{} },
+		Handler:          impl.WaitNodeReady,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -82,3 +146,19 @@ const NodesAPI_CreateSSHCredentials_ToolSpecOutputSchemaJSON = "{\"type\":\"obje
 const NodesAPI_CreateStaticInstance_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\",\"description\":\"IP address of the server.\",\"examples\":[\"192.168.1.100\"],\"format\":\"ipv4\"},\"credentialsRef\":{\"type\":\"string\",\"description\":\"Name of the SSHCredentials resource to reference. Must exist in d8-system namespace.\",\"examples\":[\"worker-1-ssh\"]},\"labels\":{\"type\":[\"object\",\"null\"],\"description\":\"Labels for binding to NodeGroup via labelSelector. Must match the NodeGroup's nodeSelector.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"name\":{\"type\":\"string\",\"description\":\"Name of the StaticInstance.\",\"examples\":[\"worker-1\"]}},\"description\":\"CreateStaticInstanceRequest contains parameters for StaticInstance creation.\",\"examples\":[{\"address\":\"example\",\"credentialsRef\":\"example\",\"labels\":{\"key\":\"example\"},\"name\":\"example\"}],\"required\":[\"name\",\"address\",\"credentialsRef\"],\"additionalProperties\":false}"
 
 const NodesAPI_CreateStaticInstance_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\",\"description\":\"IP address of the server.\",\"examples\":[\"example\"],\"format\":\"ipv4\"},\"credentialsRef\":{\"type\":\"string\",\"description\":\"Name of the referenced SSHCredentials resource.\",\"examples\":[\"example\"]},\"labels\":{\"type\":[\"object\",\"null\"],\"description\":\"Labels applied to the StaticInstance for NodeGroup binding.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"name\":{\"type\":\"string\",\"description\":\"Name of the created StaticInstance resource.\",\"examples\":[\"example\"]}},\"description\":\"Result of StaticInstance creation.\",\"examples\":[{\"address\":\"example\",\"credentialsRef\":\"example\",\"labels\":{\"key\":\"example\"},\"name\":\"example\"}],\"required\":[\"name\",\"address\",\"credentialsRef\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteStaticInstance_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the StaticInstance resource to delete.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"DeleteStaticInstanceRequest contains the name of the StaticInstance to delete.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteStaticInstance_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"success\":{\"type\":\"boolean\",\"description\":\"Whether the deletion succeeded.\",\"examples\":[true]}},\"description\":\"DeleteStaticInstanceResponse contains the result of deletion.\",\"examples\":[{\"success\":true}],\"required\":[\"success\"],\"additionalProperties\":false}"
+
+const NodesAPI_RemoveNode_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"drain\":{\"type\":[\"boolean\",\"null\"],\"description\":\"Cordon and evict pods before deleting the StaticInstance. Default: true.\",\"default\":true,\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"Name of the Node (and StaticInstance) to remove.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"RemoveNodeRequest contains the node name and drain options.\",\"examples\":[{\"drain\":true,\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_RemoveNode_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"deleted\":{\"type\":\"boolean\",\"description\":\"Whether the StaticInstance was deleted.\",\"examples\":[true]},\"drained\":{\"type\":\"boolean\",\"description\":\"Whether the node was cordoned and pods were evicted.\",\"examples\":[true]}},\"description\":\"Result of the composite RemoveNode operation.\",\"examples\":[{\"deleted\":true,\"drained\":true}],\"required\":[\"drained\",\"deleted\"],\"additionalProperties\":false}"
+
+const NodesAPI_CreateNodeGroup_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":[\"integer\",\"null\"],\"description\":\"Desired number of nodes in the group.\",\"examples\":[-1],\"minimum\":0},\"disruptions\":{\"type\":[\"string\",\"null\"],\"description\":\"Disruption approval mode: 'Automatic' or 'Manual'. Default: Automatic.\",\"examples\":[\"Automatic\",\"Manual\"]},\"labels\":{\"type\":[\"object\",\"null\"],\"description\":\"Labels to apply to Node objects in this group.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"maxPodsPerNode\":{\"type\":[\"integer\",\"null\"],\"description\":\"Maximum pods per node. Default: 110.\",\"examples\":[-1],\"minimum\":1,\"maximum\":500},\"name\":{\"type\":\"string\",\"description\":\"Name of the NodeGroup resource.\",\"examples\":[\"workers\"],\"minLength\":1},\"nodeType\":{\"type\":\"string\",\"description\":\"Node type: 'Static' (CE only), 'CloudEphemeral', 'CloudPermanent', or 'CloudStatic'.\",\"examples\":[\"Static\"],\"minLength\":1}},\"description\":\"CreateNodeGroupRequest contains parameters for NodeGroup creation.\",\"examples\":[{\"count\":-1,\"disruptions\":\"example\",\"labels\":{\"key\":\"example\"},\"maxPodsPerNode\":-1,\"name\":\"example\",\"nodeType\":\"example\"}],\"required\":[\"name\",\"nodeType\"],\"additionalProperties\":false}"
+
+const NodesAPI_CreateNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"count\":{\"type\":[\"integer\",\"null\"],\"description\":\"Desired node count.\",\"examples\":[-1],\"minimum\":0},\"name\":{\"type\":\"string\",\"description\":\"Name of the created NodeGroup.\",\"examples\":[\"example\"]},\"nodeType\":{\"type\":\"string\",\"description\":\"Node type of the created NodeGroup.\",\"examples\":[\"example\"]}},\"description\":\"Result of NodeGroup creation.\",\"examples\":[{\"count\":-1,\"name\":\"example\",\"nodeType\":\"example\"}],\"required\":[\"name\",\"nodeType\"],\"additionalProperties\":false}"
+
+const NodesAPI_WaitNodeReady_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"intervalSeconds\":{\"type\":[\"integer\",\"null\"],\"description\":\"Polling interval in seconds. Default: 30.\",\"examples\":[-1],\"minimum\":5,\"maximum\":300},\"name\":{\"type\":\"string\",\"description\":\"Name of the StaticInstance to wait for.\",\"examples\":[\"worker-01\"],\"minLength\":1},\"timeoutSeconds\":{\"type\":[\"integer\",\"null\"],\"description\":\"Maximum wait time in seconds. Default: 900.\",\"examples\":[-1],\"minimum\":30,\"maximum\":3600}},\"description\":\"WaitNodeReadyRequest contains the node/StaticInstance name and polling options.\",\"examples\":[{\"intervalSeconds\":-1,\"name\":\"example\",\"timeoutSeconds\":-1}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_WaitNodeReady_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"elapsed\":{\"type\":\"string\",\"description\":\"Wall-clock time spent polling (e.g. '45s', '2m30s').\",\"examples\":[\"45s\",\"2m30s\"]},\"phase\":{\"type\":\"string\",\"description\":\"Final observed phase of the StaticInstance.\",\"examples\":[\"Running\",\"Bootstrapping\"]},\"timedOut\":{\"type\":\"boolean\",\"description\":\"True if the polling timed out before reaching Running phase.\",\"examples\":[true]}},\"description\":\"Result of polling StaticInstance until Running or timeout.\",\"examples\":[{\"elapsed\":\"example\",\"phase\":\"example\",\"timedOut\":true}],\"required\":[\"phase\",\"elapsed\",\"timedOut\"],\"additionalProperties\":false}"

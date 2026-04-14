@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -476,6 +478,227 @@ func TestListUnhealthyPods_AllHealthy(t *testing.T) {
 	}
 	if len(resp.Pods) != 0 {
 		t.Errorf("expected 0, got %d", len(resp.Pods))
+	}
+}
+
+func TestGetNode_Found(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			n := makeNodeFull(name, true, "workers", "worker")
+			n.Status.Capacity = corev1.ResourceList{
+				corev1.ResourceCPU:    *resource.NewMilliQuantity(4000, resource.DecimalSI),
+				corev1.ResourceMemory: *resource.NewQuantity(8*1024*1024*1024, resource.BinarySI),
+			}
+			n.Status.Allocatable = n.Status.Capacity
+			n.Status.Addresses = []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			}
+			return &n, nil
+		},
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return nil, nil
+		},
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			si := makeStaticInstance("worker-01", "10.0.0.1", "Running", "workers")
+			return &si, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNode(context.Background(), &pb.GetNodeRequest{Name: "worker-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Node.Name != "worker-01" {
+		t.Errorf("expected worker-01, got %s", resp.Node.Name)
+	}
+	if resp.StaticInstancePhase == nil || *resp.StaticInstancePhase != "Running" {
+		t.Errorf("expected StaticInstancePhase=Running, got %v", resp.StaticInstancePhase)
+	}
+}
+
+func TestGetNode_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return nil, fmt.Errorf("node %q not found", name)
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetNode(context.Background(), &pb.GetNodeRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestGetNode_NoStaticInstance(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			n := makeNode(name, true)
+			return &n, nil
+		},
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return nil, nil
+		},
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("not found")
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNode(context.Background(), &pb.GetNodeRequest{Name: "cloud-node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StaticInstancePhase != nil {
+		t.Errorf("expected nil StaticInstancePhase for cloud node, got %v", resp.StaticInstancePhase)
+	}
+}
+
+func TestGetNode_WithEvents(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			n := makeNode(name, true)
+			return &n, nil
+		},
+		getStaticInstanceFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("not found")
+		},
+		listNodeEventsFunc: func(_ context.Context, nodeName string) ([]corev1.Event, error) {
+			return []corev1.Event{
+				{
+					Reason:  "NodeReady",
+					Message: "node is ready",
+					Type:    "Normal",
+					Count:   1,
+				},
+			}, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNode(context.Background(), &pb.GetNodeRequest{Name: "node-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(resp.Events))
+	}
+	if resp.Events[0].Reason != "NodeReady" {
+		t.Errorf("expected reason NodeReady, got %s", resp.Events[0].Reason)
+	}
+	if resp.Events[0].Count != 1 {
+		t.Errorf("expected count 1, got %d", resp.Events[0].Count)
+	}
+}
+
+func TestGetNodeGroup_Found(t *testing.T) {
+	mc := &mockClient{
+		getNodeGroupFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			ng := makeNodeGroup(name, 2, 3)
+			return &ng, nil
+		},
+		listNodesFunc: func(_ context.Context) ([]corev1.Node, error) {
+			return []corev1.Node{
+				makeNodeWithGroup("node-1", true, "workers"),
+				makeNodeWithGroup("node-2", true, "workers"),
+				makeNodeWithGroup("node-3", false, "other"),
+			}, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNodeGroup(context.Background(), &pb.GetNodeGroupRequest{Name: "workers"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Name != "workers" {
+		t.Errorf("expected workers, got %s", resp.Name)
+	}
+	if len(resp.NodeNames) != 2 {
+		t.Errorf("expected 2 nodes in group, got %d", len(resp.NodeNames))
+	}
+}
+
+func TestGetNodeGroup_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getNodeGroupFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("node group %q not found", name)
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetNodeGroup(context.Background(), &pb.GetNodeGroupRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestGetDeckhouseLogs_Success(t *testing.T) {
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, ns string) ([]corev1.Pod, error) {
+			pod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deckhouse-abc",
+					Namespace: "d8-system",
+					Labels:    map[string]string{"app": "deckhouse"},
+				},
+			}
+			return []corev1.Pod{pod}, nil
+		},
+		getPodLogsFunc: func(_ context.Context, _, _, _ string, _ *int64, _ *string) (string, error) {
+			return "line1\nline2\nline3\n", nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetDeckhouseLogs(context.Background(), &pb.GetDeckhouseLogsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Logs == "" {
+		t.Error("expected non-empty logs")
+	}
+}
+
+func TestGetDeckhouseLogs_NoPod(t *testing.T) {
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{}, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetDeckhouseLogs(context.Background(), &pb.GetDeckhouseLogsRequest{})
+	if err == nil {
+		t.Fatal("expected error for missing deckhouse pod")
+	}
+}
+
+func TestGetDeckhouseLogs_Grep(t *testing.T) {
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			pod := corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "deckhouse-xyz",
+					Labels: map[string]string{"app": "deckhouse"},
+				},
+			}
+			return []corev1.Pod{pod}, nil
+		},
+		getPodLogsFunc: func(_ context.Context, _, _, _ string, _ *int64, _ *string) (string, error) {
+			return "INFO: starting\nERROR: something failed\nINFO: done\n", nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	grep := "ERROR"
+	resp, err := h.GetDeckhouseLogs(context.Background(), &pb.GetDeckhouseLogsRequest{Grep: &grep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Logs != "ERROR: something failed\n" {
+		t.Errorf("expected filtered log, got %q", resp.Logs)
 	}
 }
 

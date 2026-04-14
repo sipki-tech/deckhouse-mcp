@@ -18,6 +18,9 @@ type DiagnosticsAPIToolHandler interface {
 	ListNodeGroups(ctx context.Context, req *emptypb.Empty) (*ListNodeGroupsResponse, error)
 	ListStaticInstances(ctx context.Context, req *ListStaticInstancesRequest) (*ListStaticInstancesResponse, error)
 	ListUnhealthyPods(ctx context.Context, req *ListUnhealthyPodsRequest) (*ListUnhealthyPodsResponse, error)
+	GetNode(ctx context.Context, req *GetNodeRequest) (*GetNodeResponse, error)
+	GetNodeGroup(ctx context.Context, req *GetNodeGroupRequest) (*GetNodeGroupResponse, error)
+	GetDeckhouseLogs(ctx context.Context, req *GetDeckhouseLogsRequest) (*GetDeckhouseLogsResponse, error)
 }
 
 // RegisterDiagnosticsAPITools registers generated MCP tools for DiagnosticsAPI.
@@ -100,6 +103,51 @@ func RegisterDiagnosticsAPITools(server *mcp.Server, impl DiagnosticsAPIToolHand
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetNodeRequest, *GetNodeResponse]{
+		Name:             "GetNode",
+		Title:            "Get node",
+		Description:      "Detailed information for a single cluster node: all conditions, allocatable and capacity resources, internal IP, kubelet version, optional StaticInstance phase (for static nodes), and the last 10 events.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetNode_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetNode_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetNodeRequest { return &GetNodeRequest{} },
+		NewResponse:      func() *GetNodeResponse { return &GetNodeResponse{} },
+		Handler:          impl.GetNode,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetNodeGroupRequest, *GetNodeGroupResponse]{
+		Name:             "GetNodeGroup",
+		Title:            "Get node group",
+		Description:      "Full spec and status of a Deckhouse NodeGroup plus the list of node names that belong to it (via label node.deckhouse.io/group).",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetNodeGroup_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetNodeGroup_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetNodeGroupRequest { return &GetNodeGroupRequest{} },
+		NewResponse:      func() *GetNodeGroupResponse { return &GetNodeGroupResponse{} },
+		Handler:          impl.GetNodeGroup,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetDeckhouseLogsRequest, *GetDeckhouseLogsResponse]{
+		Name:             "GetDeckhouseLogs",
+		Title:            "Get Deckhouse logs",
+		Description:      "Fetch logs of the Deckhouse controller pod running in d8-system. Supports tail line count, time window (e.g. '30m'), and client-side substring grep.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetDeckhouseLogs_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetDeckhouseLogs_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetDeckhouseLogsRequest { return &GetDeckhouseLogsRequest{} },
+		NewResponse:      func() *GetDeckhouseLogsResponse { return &GetDeckhouseLogsResponse{} },
+		Handler:          impl.GetDeckhouseLogs,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -122,3 +170,15 @@ const DiagnosticsAPI_ListStaticInstances_ToolSpecOutputSchemaJSON = "{\"type\":\
 const DiagnosticsAPI_ListUnhealthyPods_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"excludeCompleted\":{\"type\":[\"boolean\",\"null\"],\"description\":\"Exclude pods in Completed/Succeeded state.\",\"examples\":[true]},\"namespace\":{\"type\":[\"string\",\"null\"],\"description\":\"Filter by namespace. If empty, all namespaces are searched.\",\"examples\":[\"d8-system\",\"kube-system\",\"default\"]}},\"description\":\"ListUnhealthyPodsRequest contains optional filters.\",\"examples\":[{\"excludeCompleted\":true,\"namespace\":\"example\"}],\"additionalProperties\":false}"
 
 const DiagnosticsAPI_ListUnhealthyPods_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"pods\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"age\":{\"type\":\"string\",\"description\":\"Human-readable age since pod creation (e.g. 3d, 12h, 45m).\",\"examples\":[\"5m\",\"2h\"]},\"name\":{\"type\":\"string\",\"description\":\"Pod name.\",\"examples\":[\"example\"]},\"namespace\":{\"type\":\"string\",\"description\":\"Namespace the pod belongs to.\",\"examples\":[\"example\"]},\"reason\":{\"type\":\"string\",\"description\":\"Reason from pod status or the last terminated container state.\",\"examples\":[\"example\"]},\"restartCount\":{\"type\":\"integer\",\"description\":\"Total container restart count across all containers in the pod.\",\"examples\":[-1],\"minimum\":0},\"status\":{\"type\":\"string\",\"description\":\"Pod phase or container state reason (e.g. Pending, CrashLoopBackOff, ImagePullBackOff, Error).\",\"examples\":[\"CrashLoopBackOff\",\"Pending\"]}},\"description\":\"Pods not in Running or Succeeded phase.\\n\\nA pod that is not healthy: Pending, Failed, CrashLoopBackOff, etc.\",\"examples\":[{\"age\":\"example\",\"name\":\"example\",\"namespace\":\"example\",\"reason\":\"example\",\"restartCount\":-1,\"status\":\"example\"}],\"required\":[\"name\",\"namespace\",\"status\",\"reason\",\"restartCount\",\"age\"],\"additionalProperties\":false},\"description\":\"Pods not in Running or Succeeded phase.\\n\\nA pod that is not healthy: Pending, Failed, CrashLoopBackOff, etc.\",\"examples\":[[{\"age\":\"example\",\"name\":\"example\",\"namespace\":\"example\",\"reason\":\"example\",\"restartCount\":-1,\"status\":\"example\"}]]}},\"examples\":[{\"pods\":[{\"age\":\"example\",\"name\":\"example\",\"namespace\":\"example\",\"reason\":\"example\",\"restartCount\":-1,\"status\":\"example\"}]}],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNode_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the Node object.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"GetNodeRequest contains the name of the node to retrieve.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNode_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"allocatable\":{\"type\":[\"object\",\"null\"],\"description\":\"Allocatable resources available for scheduling (e.g. cpu, memory, pods).\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"capacity\":{\"type\":[\"object\",\"null\"],\"description\":\"Total capacity of the node resources.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"conditions\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"Human-readable message for the condition.\",\"examples\":[\"example\"]},\"status\":{\"type\":\"string\",\"description\":\"Condition status: True, False, or Unknown.\",\"examples\":[\"True\",\"False\"]},\"type\":{\"type\":\"string\",\"description\":\"Condition type (e.g. Ready, MemoryPressure, DiskPressure, PIDPressure).\",\"examples\":[\"Ready\"]}},\"description\":\"All node conditions (Ready, MemoryPressure, DiskPressure, etc.).\\n\\nA Kubernetes node condition.\",\"examples\":[{\"message\":\"example\",\"status\":\"example\",\"type\":\"example\"}],\"required\":[\"type\",\"status\",\"message\"],\"additionalProperties\":false},\"description\":\"All node conditions (Ready, MemoryPressure, DiskPressure, etc.).\\n\\nA Kubernetes node condition.\",\"examples\":[[{\"message\":\"example\",\"status\":\"example\",\"type\":\"example\"}]]},\"events\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\",\"description\":\"Number of times this event has occurred.\",\"examples\":[-1],\"minimum\":1},\"lastTime\":{\"type\":\"string\",\"description\":\"Timestamp of the last occurrence of this event.\",\"examples\":[\"example\"],\"format\":\"date-time\"},\"message\":{\"type\":\"string\",\"description\":\"Human-readable event message.\",\"examples\":[\"example\"]},\"reason\":{\"type\":\"string\",\"description\":\"Short reason for the event (e.g. NodeReady, NodeNotReady).\",\"examples\":[\"example\"]},\"type\":{\"type\":\"string\",\"description\":\"Event type: Normal or Warning.\",\"examples\":[\"Normal\",\"Warning\"]}},\"description\":\"Last 10 Kubernetes Events involving this node.\\n\\nA Kubernetes event related to a node.\",\"examples\":[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}],\"required\":[\"reason\",\"message\",\"type\",\"lastTime\",\"count\"],\"additionalProperties\":false},\"description\":\"Last 10 Kubernetes Events involving this node.\\n\\nA Kubernetes event related to a node.\",\"examples\":[[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}]]},\"node\":{\"type\":\"object\",\"properties\":{\"age\":{\"type\":\"string\",\"description\":\"Human-readable age since node creation (e.g. 3d, 12h, 45m).\",\"examples\":[\"3d\",\"12h\"]},\"internalIp\":{\"type\":\"string\",\"description\":\"Internal IP address from node status.\",\"examples\":[\"example\"],\"format\":\"ipv4\"},\"kubeletVersion\":{\"type\":\"string\",\"description\":\"Kubelet version running on the node.\",\"examples\":[\"v1.31.6\"]},\"name\":{\"type\":\"string\",\"description\":\"Node object name.\",\"examples\":[\"example\"]},\"nodeGroup\":{\"type\":\"string\",\"description\":\"Name of the Deckhouse NodeGroup this node belongs to (from label node.deckhouse.io/group).\",\"examples\":[\"example\"]},\"osImage\":{\"type\":\"string\",\"description\":\"OS image reported by kubelet (e.g. Ubuntu 22.04.4 LTS).\",\"examples\":[\"example\"]},\"role\":{\"type\":\"string\",\"description\":\"Kubernetes role from node labels (e.g. master, worker).\",\"examples\":[\"master\",\"worker\"]},\"status\":{\"type\":\"string\",\"description\":\"Readiness status: Ready or NotReady.\",\"examples\":[\"Ready\",\"NotReady\"]}},\"description\":\"Basic node info (same fields as ListNodes).\\n\\nKubernetes node with Deckhouse-specific metadata.\",\"examples\":[{\"age\":\"example\",\"internalIp\":\"example\",\"kubeletVersion\":\"example\",\"name\":\"example\",\"nodeGroup\":\"example\",\"osImage\":\"example\",\"role\":\"example\",\"status\":\"example\"}],\"required\":[\"name\",\"status\",\"role\",\"internalIp\",\"osImage\",\"kubeletVersion\",\"age\",\"nodeGroup\"],\"additionalProperties\":false},\"staticInstancePhase\":{\"type\":[\"string\",\"null\"],\"description\":\"Phase of the associated StaticInstance, if the node is a static node.\",\"examples\":[\"Running\",\"Bootstrapping\"]}},\"description\":\"Detailed information for a single cluster node.\",\"examples\":[{\"allocatable\":{\"key\":\"example\"},\"capacity\":{\"key\":\"example\"},\"conditions\":[{\"message\":\"example\",\"status\":\"example\",\"type\":\"example\"}],\"events\":[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}],\"node\":{\"age\":\"example\",\"internalIp\":\"example\",\"kubeletVersion\":\"example\",\"name\":\"example\",\"nodeGroup\":\"example\",\"osImage\":\"example\",\"role\":\"example\",\"status\":\"example\"},\"staticInstancePhase\":\"example\"}],\"required\":[\"node\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNodeGroup_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the NodeGroup resource.\",\"examples\":[\"worker\"],\"minLength\":1}},\"description\":\"GetNodeGroupRequest contains the name of the NodeGroup to retrieve.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"NodeGroup resource name.\",\"examples\":[\"example\"]},\"nodeNames\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"string\",\"description\":\"Names of nodes that belong to this NodeGroup.\",\"examples\":[\"example\"]},\"description\":\"Names of nodes that belong to this NodeGroup.\",\"examples\":[[\"example\"]]},\"nodeType\":{\"type\":\"string\",\"description\":\"Type of nodes in this group (Static, CloudEphemeral, CloudPermanent, CloudStatic).\",\"examples\":[\"Static\"]},\"ready\":{\"type\":\"integer\",\"description\":\"Number of ready nodes.\",\"examples\":[-1],\"minimum\":0},\"statusMessage\":{\"type\":\"string\",\"description\":\"Human-readable status or error message from NodeGroup status.\",\"examples\":[\"example\"]},\"total\":{\"type\":\"integer\",\"description\":\"Total nodes in the group.\",\"examples\":[-1],\"minimum\":0},\"upToDate\":{\"type\":\"integer\",\"description\":\"Nodes running the current configuration.\",\"examples\":[-1],\"minimum\":0}},\"description\":\"Full spec and status of a Deckhouse NodeGroup.\",\"examples\":[{\"name\":\"example\",\"nodeNames\":[\"example\"],\"nodeType\":\"example\",\"ready\":-1,\"statusMessage\":\"example\",\"total\":-1,\"upToDate\":-1}],\"required\":[\"name\",\"nodeType\",\"ready\",\"total\",\"upToDate\",\"statusMessage\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetDeckhouseLogs_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"grep\":{\"type\":[\"string\",\"null\"],\"description\":\"Filter log lines to those containing this substring (case-sensitive).\",\"examples\":[\"example\"]},\"since\":{\"type\":[\"string\",\"null\"],\"description\":\"Return logs since this duration ago (e.g. '30m', '2h').\",\"examples\":[\"30m\",\"1h\"]},\"tail\":{\"type\":[\"integer\",\"null\"],\"description\":\"Number of log lines to return from the end. Default: 100.\",\"examples\":[-1],\"minimum\":1,\"maximum\":10000}},\"description\":\"GetDeckhouseLogsRequest contains optional log filtering parameters.\",\"examples\":[{\"grep\":\"example\",\"since\":\"example\",\"tail\":-1}],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetDeckhouseLogs_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"logs\":{\"type\":\"string\",\"description\":\"Log output as a single string with newline-separated lines.\",\"examples\":[\"example\"]}},\"description\":\"GetDeckhouseLogsResponse contains the log output.\",\"examples\":[{\"logs\":\"example\"}],\"required\":[\"logs\"],\"additionalProperties\":false}"

@@ -38,6 +38,42 @@ service NodesAPI {
       annotations: { destructive_hint: true }
     };
   }
+
+  // DeleteStaticInstance deletes a StaticInstance resource.
+  rpc DeleteStaticInstance(DeleteStaticInstanceRequest) returns (DeleteStaticInstanceResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Delete static instance"
+      description: "Delete a StaticInstance resource by name. Deckhouse will gracefully clean up the node."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // RemoveNode drains and removes a static node from the cluster.
+  rpc RemoveNode(RemoveNodeRequest) returns (RemoveNodeResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Remove node"
+      description: "Composite: cordon the node, evict all non-DaemonSet pods, then delete the associated StaticInstance. Returns error if no StaticInstance is found for the node (static nodes only)."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // CreateNodeGroup creates a new NodeGroup resource.
+  rpc CreateNodeGroup(CreateNodeGroupRequest) returns (CreateNodeGroupResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create node group"
+      description: "Create a new NodeGroup resource. In Deckhouse CE only 'Static' nodeType is supported."
+      annotations: { read_only_hint: false }
+    };
+  }
+
+  // WaitNodeReady polls until a StaticInstance reaches Running phase or timeout.
+  rpc WaitNodeReady(WaitNodeReadyRequest) returns (WaitNodeReadyResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Wait node ready"
+      description: "Poll StaticInstance.status.currentStatus.phase until it reaches 'Running' or timeout. Returns the final phase, elapsed time, and whether timeout occurred."
+      annotations: { read_only_hint: true }
+    };
+  }
 }
 
 // AddWorkerNodeRequest contains parameters for the composite add-node operation.
@@ -172,5 +208,128 @@ message CreateStaticInstanceResponse {
   string credentials_ref = 3 [(mcp.options.v1.field) = { description: "Name of the referenced SSHCredentials resource." }];
   map<string, string> labels = 4 [(mcp.options.v1.field) = {
     description: "Labels applied to the StaticInstance for NodeGroup binding."
+  }];
+}
+
+// DeleteStaticInstanceRequest contains the name of the StaticInstance to delete.
+message DeleteStaticInstanceRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the StaticInstance resource to delete."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+}
+
+// DeleteStaticInstanceResponse contains the result of deletion.
+message DeleteStaticInstanceResponse {
+  bool success = 1 [(mcp.options.v1.field) = { description: "Whether the deletion succeeded." }];
+}
+
+// RemoveNodeRequest contains the node name and drain options.
+message RemoveNodeRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the Node (and StaticInstance) to remove."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+  optional bool drain = 2 [(mcp.options.v1.field) = {
+    description: "Cordon and evict pods before deleting the StaticInstance. Default: true."
+    default_value: { bool_value: true }
+  }];
+}
+
+// RemoveNodeResponse contains the result of the remove node operation.
+message RemoveNodeResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the composite RemoveNode operation."
+  };
+
+  bool drained = 1 [(mcp.options.v1.field) = {
+    description: "Whether the node was cordoned and pods were evicted."
+  }];
+  bool deleted = 2 [(mcp.options.v1.field) = {
+    description: "Whether the StaticInstance was deleted."
+  }];
+}
+
+// CreateNodeGroupRequest contains parameters for NodeGroup creation.
+message CreateNodeGroupRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the NodeGroup resource."
+    examples: [{ string_value: "workers" }]
+    min_length: 1
+  }];
+  string node_type = 2 [(mcp.options.v1.field) = {
+    description: "Node type: 'Static' (CE only), 'CloudEphemeral', 'CloudPermanent', or 'CloudStatic'."
+    examples: [{ string_value: "Static" }]
+    min_length: 1
+  }];
+  optional int32 count = 3 [(mcp.options.v1.field) = {
+    description: "Desired number of nodes in the group."
+    minimum: 0
+  }];
+  map<string, string> labels = 4 [(mcp.options.v1.field) = {
+    description: "Labels to apply to Node objects in this group."
+  }];
+  optional string disruptions = 5 [(mcp.options.v1.field) = {
+    description: "Disruption approval mode: 'Automatic' or 'Manual'. Default: Automatic."
+    examples: [{ string_value: "Automatic" }, { string_value: "Manual" }]
+  }];
+  optional int32 max_pods_per_node = 6 [(mcp.options.v1.field) = {
+    description: "Maximum pods per node. Default: 110."
+    default_value: { integer_value: 110 }
+    minimum: 1
+    maximum: 500
+  }];
+}
+
+// CreateNodeGroupResponse contains the result of NodeGroup creation.
+message CreateNodeGroupResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of NodeGroup creation."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = { description: "Name of the created NodeGroup." }];
+  string node_type = 2 [(mcp.options.v1.field) = { description: "Node type of the created NodeGroup." }];
+  optional int32 count = 3 [(mcp.options.v1.field) = { description: "Desired node count." minimum: 0 }];
+}
+
+// WaitNodeReadyRequest contains the node/StaticInstance name and polling options.
+message WaitNodeReadyRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the StaticInstance to wait for."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+  optional int32 timeout_seconds = 2 [(mcp.options.v1.field) = {
+    description: "Maximum wait time in seconds. Default: 900."
+    default_value: { integer_value: 900 }
+    minimum: 30
+    maximum: 3600
+  }];
+  optional int32 interval_seconds = 3 [(mcp.options.v1.field) = {
+    description: "Polling interval in seconds. Default: 30."
+    default_value: { integer_value: 30 }
+    minimum: 5
+    maximum: 300
+  }];
+}
+
+// WaitNodeReadyResponse contains the result of polling.
+message WaitNodeReadyResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of polling StaticInstance until Running or timeout."
+  };
+
+  string phase = 1 [(mcp.options.v1.field) = {
+    description: "Final observed phase of the StaticInstance."
+    examples: [{ string_value: "Running" }, { string_value: "Bootstrapping" }]
+  }];
+  string elapsed = 2 [(mcp.options.v1.field) = {
+    description: "Wall-clock time spent polling (e.g. '45s', '2m30s')."
+    examples: [{ string_value: "45s" }, { string_value: "2m30s" }]
+  }];
+  bool timed_out = 3 [(mcp.options.v1.field) = {
+    description: "True if the polling timed out before reaching Running phase."
   }];
 }

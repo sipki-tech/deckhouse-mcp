@@ -23,9 +23,13 @@ fi
 # --- Delete test resources ----------------------------------------------------
 info "Cleaning up integration test resources..."
 kubectl --context "$KUBE_CONTEXT" delete staticinstances \
-  integration-test-si integration-test-worker 2>/dev/null || true
+  integration-test-si integration-test-worker integration-test-delete-si 2>/dev/null || true
 kubectl --context "$KUBE_CONTEXT" delete sshcredentials \
   integration-test-creds integration-test-worker-creds 2>/dev/null || true
+kubectl --context "$KUBE_CONTEXT" delete nodegroups \
+  integration-test-ng 2>/dev/null || true
+kubectl --context "$KUBE_CONTEXT" delete secret d8-cluster-configuration \
+  -n kube-system 2>/dev/null || true
 
 # --- Optionally delete MCP deployment ----------------------------------------
 if [ "${DELETE_MCP:-}" = "true" ]; then
