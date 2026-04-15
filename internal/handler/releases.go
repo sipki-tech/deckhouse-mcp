@@ -19,27 +19,32 @@ func NewReleasesHandler(client k8s.Client) *ReleasesHandler {
 	return &ReleasesHandler{client: client}
 }
 
-func (h *ReleasesHandler) ListDeckhouseReleases(ctx context.Context, req *pb.ListDeckhouseReleasesRequest) (*pb.ListDeckhouseReleasesResponse, error) {
+func (h *ReleasesHandler) ListDeckhouseReleases(
+	ctx context.Context,
+	req *pb.ListDeckhouseReleasesRequest,
+) (*pb.ListDeckhouseReleasesResponse, error) {
 	releases, err := h.client.ListDeckhouseReleases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing deckhouse releases: %w", err)
 	}
 
 	var result []*pb.DeckhouseReleaseInfo
-	for _, r := range releases {
-		name, _, _ := unstructuredNestedString(r.Object, "metadata", "name")
-		phase, _, _ := unstructuredNestedString(r.Object, "status", "phase")
-		version, _, _ := unstructuredNestedString(r.Object, "spec", "version")
-		transitionTime, _, _ := unstructuredNestedString(r.Object, "status", "transitionTime")
-		changelogLink, _, _ := unstructuredNestedString(r.Object, "spec", "changelogLink")
-		approvedVal, _, _ := nestedField(r.Object, "status", "approved")
+
+	for _, release := range releases {
+		name := unstructuredNestedString(release.Object, "metadata", "name")
+		phase := unstructuredNestedString(release.Object, "status", "phase")
+		version := unstructuredNestedString(release.Object, "spec", "version")
+		transitionTime := unstructuredNestedString(release.Object, "status", "transitionTime")
+		changelogLink := unstructuredNestedString(release.Object, "spec", "changelogLink")
+		approvedVal, _ := nestedField(release.Object, "status", "approved")
+
 		approved := false
 		if b, ok := approvedVal.(bool); ok {
 			approved = b
 		}
 
-		if req.Phase != nil && *req.Phase != pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_UNSPECIFIED {
-			wantPhase := phaseEnumToString(*req.Phase)
+		if req.Phase != nil && req.GetPhase() != pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_UNSPECIFIED {
+			wantPhase := phaseEnumToString(req.GetPhase())
 			if phase != wantPhase {
 				continue
 			}
@@ -62,13 +67,15 @@ func (h *ReleasesHandler) ListDeckhouseReleases(ctx context.Context, req *pb.Lis
 func phaseEnumToString(p pb.DeckhouseReleasePhase) string {
 	switch p {
 	case pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_PENDING:
-		return "Pending"
+		return phasePending
 	case pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_DEPLOYED:
 		return "Deployed"
 	case pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_SUPERSEDED:
 		return "Superseded"
 	case pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_SKIPPED:
 		return "Skipped"
+	case pb.DeckhouseReleasePhase_DECKHOUSE_RELEASE_PHASE_UNSPECIFIED:
+		return ""
 	default:
 		return ""
 	}
@@ -76,33 +83,38 @@ func phaseEnumToString(p pb.DeckhouseReleasePhase) string {
 
 // GetDeckhouseRelease returns full details about a specific DeckhouseRelease by version.
 // In Deckhouse the resource name matches the version (e.g. "v1.74.0").
-func (h *ReleasesHandler) GetDeckhouseRelease(ctx context.Context, req *pb.GetDeckhouseReleaseRequest) (*pb.GetDeckhouseReleaseResponse, error) {
-	r, err := h.client.GetDeckhouseRelease(ctx, req.Version)
+func (h *ReleasesHandler) GetDeckhouseRelease(
+	ctx context.Context,
+	req *pb.GetDeckhouseReleaseRequest,
+) (*pb.GetDeckhouseReleaseResponse, error) {
+	release, err := h.client.GetDeckhouseRelease(ctx, req.GetVersion())
 	if err != nil {
-		return nil, fmt.Errorf("getting deckhouse release %s: %w", req.Version, err)
+		return nil, fmt.Errorf("getting deckhouse release %s: %w", req.GetVersion(), err)
 	}
 
-	name, _, _ := unstructuredNestedString(r.Object, "metadata", "name")
-	phase, _, _ := unstructuredNestedString(r.Object, "status", "phase")
-	version, _, _ := unstructuredNestedString(r.Object, "spec", "version")
-	transitionTime, _, _ := unstructuredNestedString(r.Object, "status", "transitionTime")
-	changelogLink, _, _ := unstructuredNestedString(r.Object, "spec", "changelogLink")
-	approvedVal, _, _ := nestedField(r.Object, "status", "approved")
+	name := unstructuredNestedString(release.Object, "metadata", "name")
+	phase := unstructuredNestedString(release.Object, "status", "phase")
+	version := unstructuredNestedString(release.Object, "spec", "version")
+	transitionTime := unstructuredNestedString(release.Object, "status", "transitionTime")
+	changelogLink := unstructuredNestedString(release.Object, "spec", "changelogLink")
+	approvedVal, _ := nestedField(release.Object, "status", "approved")
+
 	approved := false
 	if b, ok := approvedVal.(bool); ok {
 		approved = b
 	}
 
 	// Also check annotation-based approval.
-	annotations := r.GetAnnotations()
+	annotations := release.GetAnnotations()
 	if annotations["release.deckhouse.io/approved"] == "true" {
 		approved = true
 	}
 
 	// Read requirements map.
 	requirements := make(map[string]string)
-	reqVal, _, _ := nestedField(r.Object, "spec", "requirements")
-	if m, ok := reqVal.(map[string]interface{}); ok {
+
+	reqVal, _ := nestedField(release.Object, "spec", "requirements")
+	if m, ok := reqVal.(map[string]any); ok {
 		for k, v := range m {
 			requirements[k] = fmt.Sprintf("%v", v)
 		}
@@ -120,33 +132,37 @@ func (h *ReleasesHandler) GetDeckhouseRelease(ctx context.Context, req *pb.GetDe
 }
 
 // ApproveRelease approves a pending Deckhouse release via merge patch on the annotation.
-func (h *ReleasesHandler) ApproveRelease(ctx context.Context, req *pb.ApproveReleaseRequest) (*pb.ApproveReleaseResponse, error) {
+func (h *ReleasesHandler) ApproveRelease(
+	ctx context.Context,
+	req *pb.ApproveReleaseRequest,
+) (*pb.ApproveReleaseResponse, error) {
 	// First check if it exists and read current approval state.
-	r, err := h.client.GetDeckhouseRelease(ctx, req.Version)
+	release, err := h.client.GetDeckhouseRelease(ctx, req.GetVersion())
 	if err != nil {
-		return nil, fmt.Errorf("getting deckhouse release %s: %w", req.Version, err)
+		return nil, fmt.Errorf("getting deckhouse release %s: %w", req.GetVersion(), err)
 	}
 
 	// Check if already approved.
-	annotations := r.GetAnnotations()
+	annotations := release.GetAnnotations()
 	prevApproved := annotations["release.deckhouse.io/approved"] == "true"
 
 	// Apply approval via merge patch.
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": map[string]interface{}{
+	patch := map[string]any{
+		"metadata": map[string]any{
+			"annotations": map[string]any{
 				"release.deckhouse.io/approved": "true",
 			},
 		},
 	}
+
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling approval patch: %w", err)
 	}
 
-	_, err = h.client.PatchDeckhouseRelease(ctx, req.Version, patchBytes)
+	_, err = h.client.PatchDeckhouseRelease(ctx, req.GetVersion(), patchBytes)
 	if err != nil {
-		return nil, fmt.Errorf("patching deckhouse release %s: %w", req.Version, err)
+		return nil, fmt.Errorf("patching deckhouse release %s: %w", req.GetVersion(), err)
 	}
 
 	return &pb.ApproveReleaseResponse{
