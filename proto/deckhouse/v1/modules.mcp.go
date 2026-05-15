@@ -16,6 +16,8 @@ type ModulesAPIToolHandler interface {
 	GetModuleConfig(ctx context.Context, req *GetModuleConfigRequest) (*GetModuleConfigResponse, error)
 	EnableModule(ctx context.Context, req *EnableModuleRequest) (*EnableModuleResponse, error)
 	DisableModule(ctx context.Context, req *DisableModuleRequest) (*DisableModuleResponse, error)
+	ListModules(ctx context.Context, req *ListModulesRequest) (*ListModulesResponse, error)
+	UpdateModuleSettings(ctx context.Context, req *UpdateModuleSettingsRequest) (*UpdateModuleSettingsResponse, error)
 }
 
 // RegisterModulesAPITools registers generated MCP tools for ModulesAPI.
@@ -83,6 +85,36 @@ func RegisterModulesAPITools(server *mcp.Server, impl ModulesAPIToolHandler, opt
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*ListModulesRequest, *ListModulesResponse]{
+		Name:             "ListModules",
+		Title:            "List modules",
+		Description:      "List all Deckhouse Module resources. Unlike ModuleConfig (user configuration), Module is a runtime resource describing the current state of a module: weight, source, and lifecycle state (Enabled, Disabled, etc.).",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_ListModules_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_ListModules_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *ListModulesRequest { return &ListModulesRequest{} },
+		NewResponse:      func() *ListModulesResponse { return &ListModulesResponse{} },
+		Handler:          impl.ListModules,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*UpdateModuleSettingsRequest, *UpdateModuleSettingsResponse]{
+		Name:             "UpdateModuleSettings",
+		Title:            "Update module settings",
+		Description:      "Deep-merge the provided settings into ModuleConfig.spec.settings using JSON Merge Patch (RFC 7396). Top-level keys absent in the request are preserved; keys with null values are removed; keys with new values are overwritten. Use full GetModuleConfig + a complete settings replacement if you need full overwrite semantics.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_UpdateModuleSettings_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_UpdateModuleSettings_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *UpdateModuleSettingsRequest { return &UpdateModuleSettingsRequest{} },
+		NewResponse:      func() *UpdateModuleSettingsResponse { return &UpdateModuleSettingsResponse{} },
+		Handler:          impl.UpdateModuleSettings,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -101,3 +133,11 @@ const ModulesAPI_EnableModule_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\
 const ModulesAPI_DisableModule_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1}},\"description\":\"DisableModuleRequest contains the module name to disable.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
 
 const ModulesAPI_DisableModule_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"previousState\":{\"type\":\"boolean\",\"description\":\"Previous value of spec.enabled before this call.\",\"examples\":[true]},\"success\":{\"type\":\"boolean\",\"description\":\"Whether the operation succeeded.\",\"examples\":[true]}},\"description\":\"Result of the disable module operation.\",\"examples\":[{\"previousState\":true,\"success\":true}],\"required\":[\"success\",\"previousState\"],\"additionalProperties\":false}"
+
+const ModulesAPI_ListModules_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"description\":\"ListModulesRequest is empty — no filters yet.\",\"additionalProperties\":false}"
+
+const ModulesAPI_ListModules_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"modules\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Module resource name (same as the module name, e.g. cert-manager, ingress-nginx).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"]},\"source\":{\"type\":\"string\",\"description\":\"ModuleSource that provides this module (from spec.source). Empty for embedded Deckhouse modules.\",\"examples\":[\"example\"]},\"state\":{\"type\":\"string\",\"description\":\"Current lifecycle state from status.phase (e.g. Enabled, Disabled, Available).\",\"examples\":[\"Enabled\",\"Disabled\"]},\"weight\":{\"type\":\"integer\",\"description\":\"Module weight from spec.weight controlling load order. 0 if not set.\",\"examples\":[-1],\"minimum\":0}},\"description\":\"All Deckhouse Module resources in the cluster.\\n\\nDeckhouse Module resource — runtime view of a module (state, weight, source). Distinct from ModuleConfig which holds user configuration.\",\"examples\":[{\"name\":\"example\",\"source\":\"example\",\"state\":\"example\",\"weight\":-1}],\"required\":[\"name\",\"weight\",\"source\",\"state\"],\"additionalProperties\":false},\"description\":\"All Deckhouse Module resources in the cluster.\\n\\nDeckhouse Module resource — runtime view of a module (state, weight, source). Distinct from ModuleConfig which holds user configuration.\",\"examples\":[[{\"name\":\"example\",\"source\":\"example\",\"state\":\"example\",\"weight\":-1}]]}},\"description\":\"ListModulesResponse contains all Module resources.\",\"examples\":[{\"modules\":[{\"name\":\"example\",\"source\":\"example\",\"state\":\"example\",\"weight\":-1}]}],\"additionalProperties\":false}"
+
+const ModulesAPI_UpdateModuleSettings_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name, e.g. cert-manager).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1},\"settings\":{\"type\":\"object\",\"description\":\"Settings document to merge into ModuleConfig.spec.settings using JSON Merge Patch (RFC 7396). Top-level keys absent in this object are preserved; explicit null values remove the corresponding key; new values overwrite existing ones. Must contain at least one field.\",\"examples\":[{\"kind\":\"demo\",\"nested\":{\"ok\":true}}],\"additionalProperties\":true}},\"description\":\"UpdateModuleSettingsRequest carries a partial settings document to merge.\",\"examples\":[{\"name\":\"example\",\"settings\":{\"kind\":\"demo\",\"nested\":{\"ok\":true}}}],\"required\":[\"name\",\"settings\"],\"additionalProperties\":false}"
+
+const ModulesAPI_UpdateModuleSettings_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"updated\":{\"type\":\"boolean\",\"description\":\"Whether the ModuleConfig was successfully updated. False if the merged settings were byte-identical to the existing ones (no-op).\",\"examples\":[true]}},\"description\":\"Result of the UpdateModuleSettings operation.\",\"examples\":[{\"updated\":true}],\"required\":[\"updated\"],\"additionalProperties\":false}"

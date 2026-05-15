@@ -16,15 +16,19 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # Core resources — cluster configuration (read-only)
+  # Core resources — cluster configuration (read + Batch 2 write)
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get"]
+    verbs: ["get", "update"]
     resourceNames: ["d8-cluster-configuration"]
-  # Core resources — node management (P1 write)
+  # Core resources — node management (P1 cordon + Batch 2 uncordon)
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["update", "patch"]
+  # Core resources — Batch 2 drain (Eviction API)
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
   # Deckhouse CRDs — read-only
   - apiGroups: ["deckhouse.io"]
     resources:
@@ -32,6 +36,9 @@ rules:
       - staticinstances
       - moduleconfigs
       - deckhouserelease
+      - modules
+      - modulesources
+      - moduleupdatepolicies
     verbs: ["get", "list"]
   # Deckhouse CRDs — write (P0 handlers)
   - apiGroups: ["deckhouse.io"]
@@ -39,10 +46,12 @@ rules:
       - staticinstances
       - sshcredentials
     verbs: ["create"]
-  # Deckhouse CRDs — write (P1 handlers)
+  # Deckhouse CRDs — write (P1 + Batch 2 handlers)
   - apiGroups: ["deckhouse.io"]
     resources:
       - staticinstances
+      - sshcredentials
+      - nodegroups
     verbs: ["delete"]
   - apiGroups: ["deckhouse.io"]
     resources:
@@ -56,6 +65,12 @@ rules:
     resources:
       - deckhouserelease
     verbs: ["patch"]
+  # Deckhouse CRDs — write (Batch 3 SourcesAPI)
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - modulesources
+      - moduleupdatepolicies
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

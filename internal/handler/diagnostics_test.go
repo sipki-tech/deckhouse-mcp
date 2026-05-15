@@ -675,6 +675,192 @@ func TestGetDeckhouseLogs_NoPod(t *testing.T) {
 	}
 }
 
+func TestGetNodeEvents_Happy(t *testing.T) {
+	mc := &mockClient{
+		listNodeEventsFunc: func(_ context.Context, nodeName string) ([]corev1.Event, error) {
+			if nodeName != "worker-01" {
+				t.Errorf("expected node worker-01, got %q", nodeName)
+			}
+			return []corev1.Event{
+				{Reason: "NodeReady", Message: "ready", Type: "Normal", Count: 1, LastTimestamp: metav1.Now()},
+				{Reason: "NodeNotReady", Message: "not ready", Type: "Warning", Count: 2, LastTimestamp: metav1.Now()},
+			}, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNodeEvents(context.Background(), &pb.GetNodeEventsRequest{Name: "worker-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(resp.Events))
+	}
+	if resp.Events[0].Reason != "NodeReady" {
+		t.Errorf("expected first reason=NodeReady, got %q", resp.Events[0].Reason)
+	}
+	if resp.Events[1].Type != "Warning" {
+		t.Errorf("expected second type=Warning, got %q", resp.Events[1].Type)
+	}
+}
+
+func TestGetNodeEvents_NoEvents(t *testing.T) {
+	mc := &mockClient{
+		listNodeEventsFunc: func(_ context.Context, _ string) ([]corev1.Event, error) {
+			return nil, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetNodeEvents(context.Background(), &pb.GetNodeEventsRequest{Name: "quiet-node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(resp.Events))
+	}
+}
+
+func TestGetNodeEvents_NotFound(t *testing.T) {
+	mc := &mockClient{
+		listNodeEventsFunc: func(_ context.Context, nodeName string) ([]corev1.Event, error) {
+			return nil, fmt.Errorf("listing events for node %q: not found", nodeName)
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetNodeEvents(context.Background(), &pb.GetNodeEventsRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestGetStaticInstance_Happy(t *testing.T) {
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			if name != "worker-01" {
+				t.Errorf("expected name worker-01, got %q", name)
+			}
+			si := makeStaticInstance(name, "10.0.0.1", "Running", "workers")
+			// Add credentialsRef and nodeRef for the assertion below.
+			si.Object["spec"].(map[string]any)["credentialsRef"] = map[string]any{"name": "worker-01-ssh"}
+			si.Object["status"].(map[string]any)["nodeRef"] = map[string]any{"name": "worker-01"}
+			return &si, nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	resp, err := h.GetStaticInstance(context.Background(), &pb.GetStaticInstanceRequest{Name: "worker-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Name != "worker-01" {
+		t.Errorf("expected name worker-01, got %q", resp.Name)
+	}
+	if resp.Address != "10.0.0.1" {
+		t.Errorf("expected address 10.0.0.1, got %q", resp.Address)
+	}
+	if resp.Phase != "Running" {
+		t.Errorf("expected phase Running, got %q", resp.Phase)
+	}
+	if resp.CredentialsRef != "worker-01-ssh" {
+		t.Errorf("expected credentialsRef worker-01-ssh, got %q", resp.CredentialsRef)
+	}
+	if resp.NodeRef != "worker-01" {
+		t.Errorf("expected nodeRef worker-01, got %q", resp.NodeRef)
+	}
+	if resp.Labels["node.deckhouse.io/group"] != "workers" {
+		t.Errorf("expected label workers, got %q", resp.Labels["node.deckhouse.io/group"])
+	}
+}
+
+func TestGetStaticInstance_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getStaticInstanceFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("static instance %q not found", name)
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetStaticInstance(context.Background(), &pb.GetStaticInstanceRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestGetPodLogs_Happy(t *testing.T) {
+	var (
+		capturedNS, capturedPod, capturedContainer string
+		capturedTail                               *int64
+		capturedSince                              *string
+	)
+	mc := &mockClient{
+		getPodLogsFunc: func(_ context.Context, ns, pod, container string, tail *int64, since *string) (string, error) {
+			capturedNS = ns
+			capturedPod = pod
+			capturedContainer = container
+			capturedTail = tail
+			capturedSince = since
+			return "line1\nline2\n", nil
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	container := "deckhouse"
+	tail := int64(50)
+	since := "30m"
+	resp, err := h.GetPodLogs(context.Background(), &pb.GetPodLogsRequest{
+		Namespace: "d8-system",
+		Pod:       "deckhouse-abc",
+		Container: &container,
+		Tail:      ptr(int32(50)),
+		Since:     &since,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Logs != "line1\nline2\n" {
+		t.Errorf("expected logs, got %q", resp.Logs)
+	}
+	if capturedNS != "d8-system" {
+		t.Errorf("expected ns d8-system, got %q", capturedNS)
+	}
+	if capturedPod != "deckhouse-abc" {
+		t.Errorf("expected pod deckhouse-abc, got %q", capturedPod)
+	}
+	if capturedContainer != "deckhouse" {
+		t.Errorf("expected container deckhouse, got %q", capturedContainer)
+	}
+	if capturedTail == nil || *capturedTail != tail {
+		t.Errorf("expected tail %d, got %v", tail, capturedTail)
+	}
+	if capturedSince == nil || *capturedSince != since {
+		t.Errorf("expected since %q, got %v", since, capturedSince)
+	}
+}
+
+func TestGetPodLogs_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getPodLogsFunc: func(_ context.Context, _, _, _ string, _ *int64, _ *string) (string, error) {
+			return "", fmt.Errorf("opening log stream: pod not found")
+		},
+	}
+
+	h := NewDiagnosticsHandler(mc)
+	_, err := h.GetPodLogs(context.Background(), &pb.GetPodLogsRequest{
+		Namespace: "ns",
+		Pod:       "missing",
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// ptr is a small helper for getting a pointer to a value (used for int32 → *int32).
+func ptr[T any](v T) *T {
+	return &v
+}
+
 func TestGetDeckhouseLogs_Grep(t *testing.T) {
 	mc := &mockClient{
 		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {

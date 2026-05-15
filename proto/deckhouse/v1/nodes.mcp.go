@@ -20,6 +20,11 @@ type NodesAPIToolHandler interface {
 	RemoveNode(ctx context.Context, req *RemoveNodeRequest) (*RemoveNodeResponse, error)
 	CreateNodeGroup(ctx context.Context, req *CreateNodeGroupRequest) (*CreateNodeGroupResponse, error)
 	WaitNodeReady(ctx context.Context, req *WaitNodeReadyRequest) (*WaitNodeReadyResponse, error)
+	CordonNode(ctx context.Context, req *CordonNodeRequest) (*CordonNodeResponse, error)
+	UncordonNode(ctx context.Context, req *UncordonNodeRequest) (*UncordonNodeResponse, error)
+	DrainNode(ctx context.Context, req *DrainNodeRequest) (*DrainNodeResponse, error)
+	DeleteSSHCredentials(ctx context.Context, req *DeleteSSHCredentialsRequest) (*DeleteSSHCredentialsResponse, error)
+	DeleteNodeGroup(ctx context.Context, req *DeleteNodeGroupRequest) (*DeleteNodeGroupResponse, error)
 }
 
 // RegisterNodesAPITools registers generated MCP tools for NodesAPI.
@@ -132,6 +137,81 @@ func RegisterNodesAPITools(server *mcp.Server, impl NodesAPIToolHandler, opts ..
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*CordonNodeRequest, *CordonNodeResponse]{
+		Name:             "CordonNode",
+		Title:            "Cordon node",
+		Description:      "Mark a node as unschedulable by setting spec.unschedulable=true. New pods will not be scheduled onto it. Returns the previous unschedulable state. Idempotent — safe to call on an already-cordoned node.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_CordonNode_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_CordonNode_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{IdempotentHint: true},
+		Icons:            nil,
+		NewRequest:       func() *CordonNodeRequest { return &CordonNodeRequest{} },
+		NewResponse:      func() *CordonNodeResponse { return &CordonNodeResponse{} },
+		Handler:          impl.CordonNode,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*UncordonNodeRequest, *UncordonNodeResponse]{
+		Name:             "UncordonNode",
+		Title:            "Uncordon node",
+		Description:      "Mark a node as schedulable by setting spec.unschedulable=false. Returns the previous unschedulable state. Idempotent — safe to call on a non-cordoned node.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_UncordonNode_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_UncordonNode_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{IdempotentHint: true},
+		Icons:            nil,
+		NewRequest:       func() *UncordonNodeRequest { return &UncordonNodeRequest{} },
+		NewResponse:      func() *UncordonNodeResponse { return &UncordonNodeResponse{} },
+		Handler:          impl.UncordonNode,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DrainNodeRequest, *DrainNodeResponse]{
+		Name:             "DrainNode",
+		Title:            "Drain node",
+		Description:      "Composite operation: (1) cordon the node, (2) iteratively evict every non-DaemonSet, non-mirror pod via the Kubernetes Eviction API (policy/v1), respecting PodDisruptionBudgets. Polls every 30s until all evictable pods are gone or the timeout expires. DaemonSet-managed pods and mirror pods are skipped. Returns the number of pods evicted, any pods that failed eviction, and timed_out flag. The node remains cordoned after the call.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_DrainNode_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_DrainNode_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *DrainNodeRequest { return &DrainNodeRequest{} },
+		NewResponse:      func() *DrainNodeResponse { return &DrainNodeResponse{} },
+		Handler:          impl.DrainNode,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DeleteSSHCredentialsRequest, *DeleteSSHCredentialsResponse]{
+		Name:             "DeleteSSHCredentials",
+		Title:            "Delete SSH credentials",
+		Description:      "Delete an SSHCredentials resource by name. Any StaticInstance still referencing it via credentialsRef will become unable to authenticate to its server.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_DeleteSSHCredentials_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_DeleteSSHCredentials_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *DeleteSSHCredentialsRequest { return &DeleteSSHCredentialsRequest{} },
+		NewResponse:      func() *DeleteSSHCredentialsResponse { return &DeleteSSHCredentialsResponse{} },
+		Handler:          impl.DeleteSSHCredentials,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DeleteNodeGroupRequest, *DeleteNodeGroupResponse]{
+		Name:             "DeleteNodeGroup",
+		Title:            "Delete node group",
+		Description:      "Delete a NodeGroup resource by name. StaticInstance resources belonging to the group will no longer be managed; nodes that have already joined the cluster keep their kubelet running but lose their NodeGroup affiliation.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_DeleteNodeGroup_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_DeleteNodeGroup_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *DeleteNodeGroupRequest { return &DeleteNodeGroupRequest{} },
+		NewResponse:      func() *DeleteNodeGroupResponse { return &DeleteNodeGroupResponse{} },
+		Handler:          impl.DeleteNodeGroup,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -162,3 +242,23 @@ const NodesAPI_CreateNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",
 const NodesAPI_WaitNodeReady_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"intervalSeconds\":{\"type\":[\"integer\",\"null\"],\"description\":\"Polling interval in seconds. Default: 30.\",\"examples\":[-1],\"minimum\":5,\"maximum\":300},\"name\":{\"type\":\"string\",\"description\":\"Name of the StaticInstance to wait for.\",\"examples\":[\"worker-01\"],\"minLength\":1},\"timeoutSeconds\":{\"type\":[\"integer\",\"null\"],\"description\":\"Maximum wait time in seconds. Default: 900.\",\"examples\":[-1],\"minimum\":30,\"maximum\":3600}},\"description\":\"WaitNodeReadyRequest contains the node/StaticInstance name and polling options.\",\"examples\":[{\"intervalSeconds\":-1,\"name\":\"example\",\"timeoutSeconds\":-1}],\"required\":[\"name\"],\"additionalProperties\":false}"
 
 const NodesAPI_WaitNodeReady_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"elapsed\":{\"type\":\"string\",\"description\":\"Wall-clock time spent polling (e.g. '45s', '2m30s').\",\"examples\":[\"45s\",\"2m30s\"]},\"phase\":{\"type\":\"string\",\"description\":\"Final observed phase of the StaticInstance.\",\"examples\":[\"Running\",\"Bootstrapping\"]},\"timedOut\":{\"type\":\"boolean\",\"description\":\"True if the polling timed out before reaching Running phase.\",\"examples\":[true]}},\"description\":\"Result of polling StaticInstance until Running or timeout.\",\"examples\":[{\"elapsed\":\"example\",\"phase\":\"example\",\"timedOut\":true}],\"required\":[\"phase\",\"elapsed\",\"timedOut\"],\"additionalProperties\":false}"
+
+const NodesAPI_CordonNode_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the Node to cordon.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"CordonNodeRequest contains the node name to cordon.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_CordonNode_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"previousState\":{\"type\":\"boolean\",\"description\":\"Previous value of spec.unschedulable before this call. True means the node was already cordoned.\",\"examples\":[true]}},\"description\":\"Result of the cordon node operation.\",\"examples\":[{\"previousState\":true}],\"required\":[\"previousState\"],\"additionalProperties\":false}"
+
+const NodesAPI_UncordonNode_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the Node to uncordon.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"UncordonNodeRequest contains the node name to uncordon.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_UncordonNode_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"previousState\":{\"type\":\"boolean\",\"description\":\"Previous value of spec.unschedulable before this call. True means the node was cordoned before this call.\",\"examples\":[true]}},\"description\":\"Result of the uncordon node operation.\",\"examples\":[{\"previousState\":true}],\"required\":[\"previousState\"],\"additionalProperties\":false}"
+
+const NodesAPI_DrainNode_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the Node to drain.\",\"examples\":[\"worker-01\"],\"minLength\":1},\"timeoutSeconds\":{\"type\":[\"integer\",\"null\"],\"description\":\"Maximum wall-clock time in seconds the drain may take. Default: 300.\",\"examples\":[-1],\"minimum\":30,\"maximum\":3600}},\"description\":\"DrainNodeRequest contains the node name and polling options.\",\"examples\":[{\"name\":\"example\",\"timeoutSeconds\":-1}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_DrainNode_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"cordoned\":{\"type\":\"boolean\",\"description\":\"Whether the cordon step succeeded. False means the drain was aborted at step 1.\",\"examples\":[true]},\"elapsed\":{\"type\":\"string\",\"description\":\"Wall-clock time spent draining (e.g. '45s', '2m30s').\",\"examples\":[\"45s\",\"2m30s\"]},\"evictedCount\":{\"type\":\"integer\",\"description\":\"Number of pods successfully evicted (or that disappeared during the loop).\",\"examples\":[-1],\"minimum\":0},\"failedPods\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"string\",\"description\":\"Pods that failed eviction with a non-recoverable error. Format: namespace/name.\",\"examples\":[\"example\"]},\"description\":\"Pods that failed eviction with a non-recoverable error. Format: namespace/name.\",\"examples\":[\"default/web-7f8d-abc\"]},\"timedOut\":{\"type\":\"boolean\",\"description\":\"True if the timeout expired before all evictable pods were removed.\",\"examples\":[true]}},\"description\":\"Outcome of the DrainNode operation.\",\"examples\":[{\"cordoned\":true,\"elapsed\":\"example\",\"evictedCount\":-1,\"failedPods\":[\"example\"],\"timedOut\":true}],\"required\":[\"cordoned\",\"evictedCount\",\"timedOut\",\"elapsed\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteSSHCredentials_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the SSHCredentials resource to delete.\",\"examples\":[\"creds-worker-01\"],\"minLength\":1}},\"description\":\"DeleteSSHCredentialsRequest contains the SSHCredentials name to delete.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteSSHCredentials_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"deleted\":{\"type\":\"boolean\",\"description\":\"Whether the resource was deleted.\",\"examples\":[true]}},\"description\":\"Result of the DeleteSSHCredentials operation.\",\"examples\":[{\"deleted\":true}],\"required\":[\"deleted\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteNodeGroup_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the NodeGroup resource to delete.\",\"examples\":[\"worker\",\"static-workers\"],\"minLength\":1}},\"description\":\"DeleteNodeGroupRequest contains the NodeGroup name to delete.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const NodesAPI_DeleteNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"deleted\":{\"type\":\"boolean\",\"description\":\"Whether the resource was deleted.\",\"examples\":[true]}},\"description\":\"Result of the DeleteNodeGroup operation.\",\"examples\":[{\"deleted\":true}],\"required\":[\"deleted\"],\"additionalProperties\":false}"

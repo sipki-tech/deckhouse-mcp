@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
+	"google.golang.org/protobuf/types/known/structpb"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	pb "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1"
@@ -215,5 +217,278 @@ func TestDisableModule_NotFound(t *testing.T) {
 	_, err := h.DisableModule(context.Background(), &pb.DisableModuleRequest{Name: "missing"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestListModules_Happy(t *testing.T) {
+	mc := &mockClient{
+		listModulesFunc: func(_ context.Context) ([]unstructured.Unstructured, error) {
+			return []unstructured.Unstructured{
+				makeModule("cert-manager", 50, "deckhouse", "Enabled"),
+				makeModule("custom-module", 100, "third-party", "Disabled"),
+			}, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	resp, err := h.ListModules(context.Background(), &pb.ListModulesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Modules) != 2 {
+		t.Fatalf("expected 2 modules, got %d", len(resp.Modules))
+	}
+	if resp.Modules[0].Name != "cert-manager" {
+		t.Errorf("expected first name cert-manager, got %q", resp.Modules[0].Name)
+	}
+	if resp.Modules[0].Weight != 50 {
+		t.Errorf("expected weight=50, got %d", resp.Modules[0].Weight)
+	}
+	if resp.Modules[0].Source != "deckhouse" {
+		t.Errorf("expected source=deckhouse, got %q", resp.Modules[0].Source)
+	}
+	if resp.Modules[0].State != "Enabled" {
+		t.Errorf("expected state=Enabled, got %q", resp.Modules[0].State)
+	}
+	if resp.Modules[1].State != "Disabled" {
+		t.Errorf("expected state=Disabled for second module, got %q", resp.Modules[1].State)
+	}
+}
+
+func TestListModules_Empty(t *testing.T) {
+	mc := &mockClient{
+		listModulesFunc: func(_ context.Context) ([]unstructured.Unstructured, error) {
+			return nil, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	resp, err := h.ListModules(context.Background(), &pb.ListModulesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Modules) != 0 {
+		t.Errorf("expected 0, got %d", len(resp.Modules))
+	}
+}
+
+func TestUpdateModuleSettings_Happy(t *testing.T) {
+	existing := makeModuleConfigWithSettings("mod-a", map[string]any{
+		"a": float64(1),
+		"nested": map[string]any{
+			"b": float64(2),
+			"c": float64(3),
+		},
+	})
+
+	var captured *unstructured.Unstructured
+
+	mc := &mockClient{
+		getModuleConfigFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			obj := existing
+			return &obj, nil
+		},
+		updateModuleConfigFunc: func(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			captured = obj
+			return obj, nil
+		},
+	}
+
+	settings, err := structpb.NewStruct(map[string]any{
+		"nested": map[string]any{"b": float64(99)},
+	})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	h := NewModulesHandler(mc)
+
+	resp, err := h.UpdateModuleSettings(context.Background(), &pb.UpdateModuleSettingsRequest{
+		Name:     "mod-a",
+		Settings: settings,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !resp.GetUpdated() {
+		t.Error("expected updated=true")
+	}
+
+	if captured == nil {
+		t.Fatal("expected UpdateModuleConfig to be called")
+	}
+
+	merged, _, err := unstructured.NestedMap(captured.Object, "spec", "settings")
+	if err != nil {
+		t.Fatalf("reading merged settings: %v", err)
+	}
+
+	if merged["a"] != float64(1) {
+		t.Errorf("expected a=1 preserved, got %v", merged["a"])
+	}
+
+	nested, ok := merged["nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("nested is not a map: %T", merged["nested"])
+	}
+
+	if nested["b"] != float64(99) {
+		t.Errorf("expected nested.b=99, got %v", nested["b"])
+	}
+
+	if nested["c"] != float64(3) {
+		t.Errorf("expected nested.c=3 preserved, got %v", nested["c"])
+	}
+}
+
+func TestUpdateModuleSettings_NullRemoves(t *testing.T) {
+	existing := makeModuleConfigWithSettings("mod-a", map[string]any{
+		"a": float64(1),
+		"nested": map[string]any{
+			"b": float64(2),
+			"c": float64(3),
+		},
+	})
+
+	var captured *unstructured.Unstructured
+
+	mc := &mockClient{
+		getModuleConfigFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			obj := existing
+			return &obj, nil
+		},
+		updateModuleConfigFunc: func(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			captured = obj
+			return obj, nil
+		},
+	}
+
+	settings, err := structpb.NewStruct(map[string]any{
+		"nested": map[string]any{"b": nil},
+	})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	h := NewModulesHandler(mc)
+
+	_, err = h.UpdateModuleSettings(context.Background(), &pb.UpdateModuleSettingsRequest{
+		Name:     "mod-a",
+		Settings: settings,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("expected UpdateModuleConfig to be called")
+	}
+
+	nested, _, err := unstructured.NestedMap(captured.Object, "spec", "settings", "nested")
+	if err != nil {
+		t.Fatalf("reading nested: %v", err)
+	}
+
+	if _, hasB := nested["b"]; hasB {
+		t.Errorf("expected nested.b to be removed, still present: %v", nested["b"])
+	}
+
+	if nested["c"] != float64(3) {
+		t.Errorf("expected nested.c=3 preserved, got %v", nested["c"])
+	}
+}
+
+func TestUpdateModuleSettings_Empty(t *testing.T) {
+	getCalled := false
+
+	mc := &mockClient{
+		getModuleConfigFunc: func(_ context.Context, _ string) (*unstructured.Unstructured, error) {
+			getCalled = true
+			obj := makeModuleConfig("mod-a", true, "")
+			return &obj, nil
+		},
+	}
+
+	settings, err := structpb.NewStruct(map[string]any{})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	h := NewModulesHandler(mc)
+
+	_, err = h.UpdateModuleSettings(context.Background(), &pb.UpdateModuleSettingsRequest{
+		Name:     "mod-a",
+		Settings: settings,
+	})
+	if err == nil {
+		t.Fatal("expected error for empty settings, got nil")
+	}
+
+	if getCalled {
+		t.Error("GetModuleConfig must NOT be called when settings are empty")
+	}
+}
+
+func TestUpdateModuleSettings_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getModuleConfigFunc: func(_ context.Context, name string) (*unstructured.Unstructured, error) {
+			return nil, fmt.Errorf("module config %q not found", name)
+		},
+	}
+
+	settings, err := structpb.NewStruct(map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatalf("structpb.NewStruct: %v", err)
+	}
+
+	h := NewModulesHandler(mc)
+
+	_, err = h.UpdateModuleSettings(context.Background(), &pb.UpdateModuleSettingsRequest{
+		Name:     "missing",
+		Settings: settings,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// The error must carry the underlying not-found cause for callers that wrap further.
+	if errors.Is(err, errNotImplemented) {
+		t.Errorf("got stub-level errNotImplemented; expected wrapped not-found: %v", err)
+	}
+}
+
+// makeModuleConfigWithSettings builds a ModuleConfig with pre-populated spec.settings.
+func makeModuleConfigWithSettings(name string, settings map[string]any) unstructured.Unstructured {
+	return unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "deckhouse.io/v1alpha1",
+			"kind":       "ModuleConfig",
+			"metadata":   map[string]any{"name": name},
+			"spec": map[string]any{
+				"enabled":  true,
+				"settings": settings,
+			},
+		},
+	}
+}
+
+// makeModule builds an unstructured Deckhouse Module resource for tests.
+func makeModule(name string, weight int64, source, state string) unstructured.Unstructured {
+	return unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "deckhouse.io/v1alpha1",
+			"kind":       "Module",
+			"metadata": map[string]interface{}{
+				"name": name,
+			},
+			"spec": map[string]interface{}{
+				"weight": weight,
+				"source": source,
+			},
+			"status": map[string]interface{}{
+				"phase": state,
+			},
+		},
 	}
 }

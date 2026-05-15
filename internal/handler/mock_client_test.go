@@ -36,6 +36,17 @@ type mockClient struct {
 	getDeckhouseReleaseFunc   func(ctx context.Context, name string) (*unstructured.Unstructured, error)
 	patchDeckhouseReleaseFunc func(ctx context.Context, name string, patch []byte) (*unstructured.Unstructured, error)
 	createSSHCredentialsFunc  func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	deleteSSHCredentialsFunc  func(ctx context.Context, name string) error
+	listModulesFunc           func(ctx context.Context) ([]unstructured.Unstructured, error)
+	deleteNodeGroupFunc       func(ctx context.Context, name string) error
+	uncordonNodeFunc          func(ctx context.Context, name string) error
+	evictPodFunc              func(ctx context.Context, namespace, name string) error
+	updateSecretFunc          func(ctx context.Context, secret *corev1.Secret) (*corev1.Secret, error)
+
+	listModuleSourcesFunc        func(ctx context.Context) ([]unstructured.Unstructured, error)
+	createModuleSourceFunc       func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	listModuleUpdatePoliciesFunc func(ctx context.Context) ([]unstructured.Unstructured, error)
+	createModuleUpdatePolicyFunc func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
 }
 
 func (m *mockClient) ListNodes(ctx context.Context) ([]corev1.Node, error) {
@@ -188,6 +199,76 @@ func (m *mockClient) PatchDeckhouseRelease(ctx context.Context, name string, pat
 func (m *mockClient) CreateSSHCredentials(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	if m.createSSHCredentialsFunc != nil {
 		return m.createSSHCredentialsFunc(ctx, obj)
+	}
+	return obj, nil
+}
+
+func (m *mockClient) ListModules(ctx context.Context) ([]unstructured.Unstructured, error) {
+	if m.listModulesFunc != nil {
+		return m.listModulesFunc(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockClient) UncordonNode(ctx context.Context, name string) error {
+	if m.uncordonNodeFunc != nil {
+		return m.uncordonNodeFunc(ctx, name)
+	}
+	return nil
+}
+
+func (m *mockClient) EvictPod(ctx context.Context, namespace, name string) error {
+	if m.evictPodFunc != nil {
+		return m.evictPodFunc(ctx, namespace, name)
+	}
+	return nil
+}
+
+func (m *mockClient) UpdateSecret(ctx context.Context, secret *corev1.Secret) (*corev1.Secret, error) {
+	if m.updateSecretFunc != nil {
+		return m.updateSecretFunc(ctx, secret)
+	}
+	return secret, nil
+}
+
+func (m *mockClient) DeleteSSHCredentials(ctx context.Context, name string) error {
+	if m.deleteSSHCredentialsFunc != nil {
+		return m.deleteSSHCredentialsFunc(ctx, name)
+	}
+	return nil
+}
+
+func (m *mockClient) DeleteNodeGroup(ctx context.Context, name string) error {
+	if m.deleteNodeGroupFunc != nil {
+		return m.deleteNodeGroupFunc(ctx, name)
+	}
+	return nil
+}
+
+func (m *mockClient) ListModuleSources(ctx context.Context) ([]unstructured.Unstructured, error) {
+	if m.listModuleSourcesFunc != nil {
+		return m.listModuleSourcesFunc(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockClient) CreateModuleSource(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if m.createModuleSourceFunc != nil {
+		return m.createModuleSourceFunc(ctx, obj)
+	}
+	return obj, nil
+}
+
+func (m *mockClient) ListModuleUpdatePolicies(ctx context.Context) ([]unstructured.Unstructured, error) {
+	if m.listModuleUpdatePoliciesFunc != nil {
+		return m.listModuleUpdatePoliciesFunc(ctx)
+	}
+	return nil, nil
+}
+
+func (m *mockClient) CreateModuleUpdatePolicy(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if m.createModuleUpdatePolicyFunc != nil {
+		return m.createModuleUpdatePolicyFunc(ctx, obj)
 	}
 	return obj, nil
 }

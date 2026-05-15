@@ -9,6 +9,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sipki-tech/deckhouse-mcp/internal/k8s"
@@ -18,7 +19,9 @@ import (
 const (
 	defaultSSHPort        = 22
 	defaultTimeoutSeconds = 900
+	defaultDrainTimeout   = 300
 	pollInterval          = 30 * time.Second
+	mirrorPodAnnotation   = "kubernetes.io/config.mirror"
 )
 
 var errPrivateKeyRequired = errors.New("privateKey is required")
@@ -336,6 +339,194 @@ func (h *NodesHandler) WaitNodeReady(
 		Elapsed:  elapsed,
 		TimedOut: timedOut,
 	}, nil
+}
+
+// CordonNode marks a node as unschedulable. Reads the current Spec.Unschedulable
+// before issuing the cordon to return the previous state (see ADR-1).
+func (h *NodesHandler) CordonNode(
+	ctx context.Context,
+	req *pb.CordonNodeRequest,
+) (*pb.CordonNodeResponse, error) {
+	node, err := h.client.GetNode(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("getting node %s: %w", req.GetName(), err)
+	}
+
+	previousState := node.Spec.Unschedulable
+
+	err = h.client.CordonNode(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("cordoning node %s: %w", req.GetName(), err)
+	}
+
+	return &pb.CordonNodeResponse{PreviousState: previousState}, nil
+}
+
+// UncordonNode marks a node as schedulable. Reads the current Spec.Unschedulable
+// before issuing the uncordon to return the previous state.
+func (h *NodesHandler) UncordonNode(
+	ctx context.Context,
+	req *pb.UncordonNodeRequest,
+) (*pb.UncordonNodeResponse, error) {
+	node, err := h.client.GetNode(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("getting node %s: %w", req.GetName(), err)
+	}
+
+	previousState := node.Spec.Unschedulable
+
+	if !previousState {
+		// Already schedulable — skip the write to remain idempotent and quiet.
+		return &pb.UncordonNodeResponse{PreviousState: false}, nil
+	}
+
+	err = h.client.UncordonNode(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("uncordoning node %s: %w", req.GetName(), err)
+	}
+
+	return &pb.UncordonNodeResponse{PreviousState: previousState}, nil
+}
+
+// DrainNode performs a composite drain: cordon the node, then iteratively evict
+// every non-DaemonSet, non-mirror pod via the Eviction API, respecting PDBs.
+// Returns when all evictable pods are gone or the timeout elapses.
+//
+// DaemonSet-managed pods and mirror pods are skipped silently — both are
+// expected to remain on the node by Kubernetes design.
+//
+// PDB-blocked pods (TooManyRequests) stay in the work-set for the next poll
+// cycle. Other eviction errors are recorded in failed_pods and the pod is
+// dropped from the work-set to avoid spinning on a permanently broken pod.
+func (h *NodesHandler) DrainNode(
+	ctx context.Context,
+	req *pb.DrainNodeRequest,
+) (*pb.DrainNodeResponse, error) {
+	start := time.Now()
+	timeoutSec := req.GetTimeoutSeconds()
+	if timeoutSec <= 0 {
+		timeoutSec = defaultDrainTimeout
+	}
+	deadline := start.Add(time.Duration(timeoutSec) * time.Second)
+
+	// Step 1 — cordon. Failure aborts the drain.
+	err := h.client.CordonNode(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("cordoning node %s: %w", req.GetName(), err)
+	}
+
+	// Step 2 — list drainable pods on the node.
+	pods, err := h.client.ListPods(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing pods for drain of %s: %w", req.GetName(), err)
+	}
+
+	type podID struct {
+		namespace, name string
+	}
+
+	pending := make(map[podID]struct{})
+	for _, pod := range pods {
+		if pod.Spec.NodeName != req.GetName() {
+			continue
+		}
+		pod := pod
+		if isDaemonSetPod(&pod) || isMirrorPod(&pod) {
+			continue
+		}
+		pending[podID{pod.Namespace, pod.Name}] = struct{}{}
+	}
+
+	var (
+		evicted    int32
+		failedPods []string
+	)
+
+	// Step 3 — eviction loop.
+	for len(pending) > 0 {
+		for id := range pending {
+			evictErr := h.client.EvictPod(ctx, id.namespace, id.name)
+			switch {
+			case evictErr == nil:
+				evicted++
+				delete(pending, id)
+			case kerrors.IsNotFound(evictErr):
+				// Pod already gone — count as evicted.
+				evicted++
+				delete(pending, id)
+			case kerrors.IsTooManyRequests(evictErr):
+				// PDB-blocked — retry on next poll cycle, leave in pending.
+			default:
+				failedPods = append(failedPods, id.namespace+"/"+id.name)
+				delete(pending, id)
+			}
+		}
+
+		if len(pending) == 0 {
+			break
+		}
+
+		// Wait before re-polling. Honour deadline & context cancellation.
+		if time.Now().After(deadline) {
+			break
+		}
+
+		remaining := time.Until(deadline)
+		wait := pollInterval
+		if remaining < wait {
+			wait = remaining
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("draining node %s: %w", req.GetName(), ctx.Err())
+		case <-time.After(wait):
+		}
+	}
+
+	timedOut := len(pending) > 0 && time.Now().After(deadline)
+	elapsed := time.Since(start).Truncate(time.Second).String()
+
+	return &pb.DrainNodeResponse{
+		Cordoned:     true,
+		EvictedCount: evicted,
+		FailedPods:   failedPods,
+		TimedOut:     timedOut,
+		Elapsed:      elapsed,
+	}, nil
+}
+
+// isMirrorPod returns true if the pod is a static (mirror) pod managed by kubelet.
+func isMirrorPod(pod *corev1.Pod) bool {
+	_, ok := pod.Annotations[mirrorPodAnnotation]
+
+	return ok
+}
+
+// DeleteSSHCredentials deletes an SSHCredentials resource by name.
+func (h *NodesHandler) DeleteSSHCredentials(
+	ctx context.Context,
+	req *pb.DeleteSSHCredentialsRequest,
+) (*pb.DeleteSSHCredentialsResponse, error) {
+	err := h.client.DeleteSSHCredentials(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("deleting SSHCredentials %s: %w", req.GetName(), err)
+	}
+
+	return &pb.DeleteSSHCredentialsResponse{Deleted: true}, nil
+}
+
+// DeleteNodeGroup deletes a NodeGroup resource by name.
+func (h *NodesHandler) DeleteNodeGroup(
+	ctx context.Context,
+	req *pb.DeleteNodeGroupRequest,
+) (*pb.DeleteNodeGroupResponse, error) {
+	err := h.client.DeleteNodeGroup(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("deleting NodeGroup %s: %w", req.GetName(), err)
+	}
+
+	return &pb.DeleteNodeGroupResponse{Deleted: true}, nil
 }
 
 func (h *NodesHandler) waitForNode(

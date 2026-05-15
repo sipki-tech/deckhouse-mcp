@@ -7,10 +7,156 @@ option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deck
 import "mcp/options/v1/options.proto";
 
 // SourcesAPI — module source and update policy management.
-// Not yet implemented. Planned for P2+ priority.
 service SourcesAPI {
   option (mcp.options.v1.service) = {
     namespace: "deckhouse"
     description: "Module source and update policy management."
   };
+
+  // ListModuleSources returns all ModuleSource resources in the cluster.
+  rpc ListModuleSources(ListModuleSourcesRequest) returns (ListModuleSourcesResponse) {
+    option (mcp.options.v1.method) = {
+      title: "List module sources"
+      description: "List all ModuleSource resources — OCI registries from which Deckhouse pulls modules."
+      annotations: { read_only_hint: true }
+    };
+  }
+
+  // CreateModuleSource creates a new ModuleSource resource.
+  rpc CreateModuleSource(CreateModuleSourceRequest) returns (CreateModuleSourceResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create module source"
+      description: "Create a new ModuleSource pointing at an OCI registry. Returns already-exists error if a source with the same name is already defined."
+      annotations: { read_only_hint: false, idempotent_hint: false }
+    };
+  }
+
+  // ListModuleUpdatePolicies returns all ModuleUpdatePolicy resources.
+  rpc ListModuleUpdatePolicies(ListModuleUpdatePoliciesRequest) returns (ListModuleUpdatePoliciesResponse) {
+    option (mcp.options.v1.method) = {
+      title: "List module update policies"
+      description: "List all ModuleUpdatePolicy resources controlling auto-update behaviour for modules."
+      annotations: { read_only_hint: true }
+    };
+  }
+
+  // CreateModuleUpdatePolicy creates a new ModuleUpdatePolicy resource.
+  rpc CreateModuleUpdatePolicy(CreateModuleUpdatePolicyRequest) returns (CreateModuleUpdatePolicyResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create module update policy"
+      description: "Create a new ModuleUpdatePolicy with the given update mode. Returns already-exists error if a policy with the same name is already defined."
+      annotations: { read_only_hint: false, idempotent_hint: false }
+    };
+  }
+}
+
+// ModuleSourceInfo describes a single ModuleSource resource.
+message ModuleSourceInfo {
+  option (mcp.options.v1.message) = {
+    description: "Deckhouse ModuleSource resource — an OCI registry providing modules."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleSource resource name."
+    examples: [{ string_value: "deckhouse" }, { string_value: "custom-modules" }]
+  }];
+  string registry = 2 [(mcp.options.v1.field) = {
+    description: "OCI registry URI (spec.registry.repo)."
+    examples: [{ string_value: "registry.deckhouse.io/deckhouse/ce/modules" }]
+  }];
+  string status = 3 [(mcp.options.v1.field) = {
+    description: "Human-readable status from status.message or status.syncTime."
+  }];
+}
+
+// ListModuleSourcesRequest is empty — no filters.
+message ListModuleSourcesRequest {}
+
+// ListModuleSourcesResponse contains all ModuleSource resources.
+message ListModuleSourcesResponse {
+  repeated ModuleSourceInfo sources = 1 [(mcp.options.v1.field) = {
+    description: "All ModuleSource resources in the cluster."
+  }];
+}
+
+// CreateModuleSourceRequest contains the name and registry URI.
+message CreateModuleSourceRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleSource resource name."
+    examples: [{ string_value: "custom-modules" }]
+    min_length: 1
+  }];
+  string registry = 2 [(mcp.options.v1.field) = {
+    description: "OCI registry URI to set in spec.registry.repo."
+    examples: [{ string_value: "registry.example.com/modules" }]
+    min_length: 1
+  }];
+}
+
+// CreateModuleSourceResponse reports the outcome of creation.
+message CreateModuleSourceResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the CreateModuleSource operation."
+  };
+
+  bool created = 1 [(mcp.options.v1.field) = {
+    description: "Whether the ModuleSource was successfully created."
+  }];
+  string name = 2 [(mcp.options.v1.field) = {
+    description: "Name of the created ModuleSource (echo of the request)."
+  }];
+}
+
+// ModuleUpdatePolicyInfo describes a single ModuleUpdatePolicy resource.
+message ModuleUpdatePolicyInfo {
+  option (mcp.options.v1.message) = {
+    description: "Deckhouse ModuleUpdatePolicy resource — auto-update policy for modules."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleUpdatePolicy resource name."
+    examples: [{ string_value: "auto" }, { string_value: "manual" }]
+  }];
+  string update_mode = 2 [(mcp.options.v1.field) = {
+    description: "Update mode from spec.update.mode."
+    examples: [{ string_value: "Auto" }, { string_value: "Manual" }]
+  }];
+}
+
+// ListModuleUpdatePoliciesRequest is empty — no filters.
+message ListModuleUpdatePoliciesRequest {}
+
+// ListModuleUpdatePoliciesResponse contains all ModuleUpdatePolicy resources.
+message ListModuleUpdatePoliciesResponse {
+  repeated ModuleUpdatePolicyInfo policies = 1 [(mcp.options.v1.field) = {
+    description: "All ModuleUpdatePolicy resources in the cluster."
+  }];
+}
+
+// CreateModuleUpdatePolicyRequest contains the name and update mode.
+message CreateModuleUpdatePolicyRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleUpdatePolicy resource name."
+    examples: [{ string_value: "auto" }]
+    min_length: 1
+  }];
+  string update_mode = 2 [(mcp.options.v1.field) = {
+    description: "Update mode to set in spec.update.mode."
+    examples: [{ string_value: "Auto" }, { string_value: "Manual" }]
+    min_length: 1
+  }];
+}
+
+// CreateModuleUpdatePolicyResponse reports the outcome of creation.
+message CreateModuleUpdatePolicyResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the CreateModuleUpdatePolicy operation."
+  };
+
+  bool created = 1 [(mcp.options.v1.field) = {
+    description: "Whether the ModuleUpdatePolicy was successfully created."
+  }];
+  string name = 2 [(mcp.options.v1.field) = {
+    description: "Name of the created ModuleUpdatePolicy (echo of the request)."
+  }];
 }

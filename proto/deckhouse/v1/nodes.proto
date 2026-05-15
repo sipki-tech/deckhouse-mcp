@@ -74,6 +74,51 @@ service NodesAPI {
       annotations: { read_only_hint: true }
     };
   }
+
+  // CordonNode marks a node as unschedulable (spec.unschedulable=true).
+  rpc CordonNode(CordonNodeRequest) returns (CordonNodeResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Cordon node"
+      description: "Mark a node as unschedulable by setting spec.unschedulable=true. New pods will not be scheduled onto it. Returns the previous unschedulable state. Idempotent — safe to call on an already-cordoned node."
+      annotations: { read_only_hint: false, idempotent_hint: true }
+    };
+  }
+
+  // UncordonNode marks a node as schedulable (spec.unschedulable=false).
+  rpc UncordonNode(UncordonNodeRequest) returns (UncordonNodeResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Uncordon node"
+      description: "Mark a node as schedulable by setting spec.unschedulable=false. Returns the previous unschedulable state. Idempotent — safe to call on a non-cordoned node."
+      annotations: { read_only_hint: false, idempotent_hint: true }
+    };
+  }
+
+  // DrainNode evicts non-DaemonSet pods from a node and optionally cordons it first.
+  rpc DrainNode(DrainNodeRequest) returns (DrainNodeResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Drain node"
+      description: "Composite operation: (1) cordon the node, (2) iteratively evict every non-DaemonSet, non-mirror pod via the Kubernetes Eviction API (policy/v1), respecting PodDisruptionBudgets. Polls every 30s until all evictable pods are gone or the timeout expires. DaemonSet-managed pods and mirror pods are skipped. Returns the number of pods evicted, any pods that failed eviction, and timed_out flag. The node remains cordoned after the call."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // DeleteSSHCredentials deletes an SSHCredentials resource.
+  rpc DeleteSSHCredentials(DeleteSSHCredentialsRequest) returns (DeleteSSHCredentialsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Delete SSH credentials"
+      description: "Delete an SSHCredentials resource by name. Any StaticInstance still referencing it via credentialsRef will become unable to authenticate to its server."
+      annotations: { destructive_hint: true }
+    };
+  }
+
+  // DeleteNodeGroup deletes a NodeGroup resource.
+  rpc DeleteNodeGroup(DeleteNodeGroupRequest) returns (DeleteNodeGroupResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Delete node group"
+      description: "Delete a NodeGroup resource by name. StaticInstance resources belonging to the group will no longer be managed; nodes that have already joined the cluster keep their kubelet running but lose their NodeGroup affiliation."
+      annotations: { destructive_hint: true }
+    };
+  }
 }
 
 // AddWorkerNodeRequest contains parameters for the composite add-node operation.
@@ -331,5 +376,126 @@ message WaitNodeReadyResponse {
   }];
   bool timed_out = 3 [(mcp.options.v1.field) = {
     description: "True if the polling timed out before reaching Running phase."
+  }];
+}
+
+// CordonNodeRequest contains the node name to cordon.
+message CordonNodeRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the Node to cordon."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+}
+
+// CordonNodeResponse contains the result of the cordon operation.
+message CordonNodeResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the cordon node operation."
+  };
+
+  bool previous_state = 1 [(mcp.options.v1.field) = {
+    description: "Previous value of spec.unschedulable before this call. True means the node was already cordoned."
+  }];
+}
+
+// UncordonNodeRequest contains the node name to uncordon.
+message UncordonNodeRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the Node to uncordon."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+}
+
+// UncordonNodeResponse contains the result of the uncordon operation.
+message UncordonNodeResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the uncordon node operation."
+  };
+
+  bool previous_state = 1 [(mcp.options.v1.field) = {
+    description: "Previous value of spec.unschedulable before this call. True means the node was cordoned before this call."
+  }];
+}
+
+// DrainNodeRequest contains the node name and polling options.
+message DrainNodeRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the Node to drain."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+  optional int32 timeout_seconds = 2 [(mcp.options.v1.field) = {
+    description: "Maximum wall-clock time in seconds the drain may take. Default: 300."
+    default_value: { integer_value: 300 }
+    minimum: 30
+    maximum: 3600
+  }];
+}
+
+// DrainNodeResponse contains the outcome of draining a node.
+message DrainNodeResponse {
+  option (mcp.options.v1.message) = {
+    description: "Outcome of the DrainNode operation."
+  };
+
+  bool cordoned = 1 [(mcp.options.v1.field) = {
+    description: "Whether the cordon step succeeded. False means the drain was aborted at step 1."
+  }];
+  int32 evicted_count = 2 [(mcp.options.v1.field) = {
+    description: "Number of pods successfully evicted (or that disappeared during the loop)."
+    minimum: 0
+  }];
+  repeated string failed_pods = 3 [(mcp.options.v1.field) = {
+    description: "Pods that failed eviction with a non-recoverable error. Format: namespace/name."
+    examples: [{ string_value: "default/web-7f8d-abc" }]
+  }];
+  bool timed_out = 4 [(mcp.options.v1.field) = {
+    description: "True if the timeout expired before all evictable pods were removed."
+  }];
+  string elapsed = 5 [(mcp.options.v1.field) = {
+    description: "Wall-clock time spent draining (e.g. '45s', '2m30s')."
+    examples: [{ string_value: "45s" }, { string_value: "2m30s" }]
+  }];
+}
+
+// DeleteSSHCredentialsRequest contains the SSHCredentials name to delete.
+message DeleteSSHCredentialsRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the SSHCredentials resource to delete."
+    examples: [{ string_value: "creds-worker-01" }]
+    min_length: 1
+  }];
+}
+
+// DeleteSSHCredentialsResponse reports the result.
+message DeleteSSHCredentialsResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the DeleteSSHCredentials operation."
+  };
+
+  bool deleted = 1 [(mcp.options.v1.field) = {
+    description: "Whether the resource was deleted."
+  }];
+}
+
+// DeleteNodeGroupRequest contains the NodeGroup name to delete.
+message DeleteNodeGroupRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the NodeGroup resource to delete."
+    examples: [{ string_value: "worker" }, { string_value: "static-workers" }]
+    min_length: 1
+  }];
+}
+
+// DeleteNodeGroupResponse reports the result.
+message DeleteNodeGroupResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the DeleteNodeGroup operation."
+  };
+
+  bool deleted = 1 [(mcp.options.v1.field) = {
+    description: "Whether the resource was deleted."
   }];
 }

@@ -4,6 +4,7 @@ package deckhouse.v1;
 
 option go_package = "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1;deckhousev1";
 
+import "google/protobuf/struct.proto";
 import "mcp/options/v1/options.proto";
 
 service ModulesAPI {
@@ -45,6 +46,25 @@ service ModulesAPI {
       title: "Disable module"
       description: "Disable a Deckhouse module by setting spec.enabled=false in its ModuleConfig. Returns the previous enabled state. Safe to call when already disabled."
       annotations: { read_only_hint: false, idempotent_hint: true }
+    };
+  }
+
+  // ListModules returns all Deckhouse Module resources (runtime objects).
+  rpc ListModules(ListModulesRequest) returns (ListModulesResponse) {
+    option (mcp.options.v1.method) = {
+      title: "List modules"
+      description: "List all Deckhouse Module resources. Unlike ModuleConfig (user configuration), Module is a runtime resource describing the current state of a module: weight, source, and lifecycle state (Enabled, Disabled, etc.)."
+      annotations: { read_only_hint: true }
+    };
+  }
+
+  // UpdateModuleSettings merges new settings into an existing ModuleConfig.spec.settings
+  // using JSON Merge Patch (RFC 7396).
+  rpc UpdateModuleSettings(UpdateModuleSettingsRequest) returns (UpdateModuleSettingsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Update module settings"
+      description: "Deep-merge the provided settings into ModuleConfig.spec.settings using JSON Merge Patch (RFC 7396). Top-level keys absent in the request are preserved; keys with null values are removed; keys with new values are overwritten. Use full GetModuleConfig + a complete settings replacement if you need full overwrite semantics."
+      annotations: { read_only_hint: false, idempotent_hint: false }
     };
   }
 }
@@ -157,5 +177,61 @@ message DisableModuleResponse {
   bool success = 1 [(mcp.options.v1.field) = { description: "Whether the operation succeeded." }];
   bool previous_state = 2 [(mcp.options.v1.field) = {
     description: "Previous value of spec.enabled before this call."
+  }];
+}
+
+// ListModulesRequest is empty — no filters yet.
+message ListModulesRequest {}
+
+// ListModulesResponse contains all Module resources.
+message ListModulesResponse {
+  repeated ModuleInfo modules = 1 [(mcp.options.v1.field) = {
+    description: "All Deckhouse Module resources in the cluster."
+  }];
+}
+
+// ModuleInfo describes a single Deckhouse Module runtime resource.
+message ModuleInfo {
+  option (mcp.options.v1.message) = {
+    description: "Deckhouse Module resource — runtime view of a module (state, weight, source). Distinct from ModuleConfig which holds user configuration."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Module resource name (same as the module name, e.g. cert-manager, ingress-nginx)."
+    examples: [{ string_value: "cert-manager" }, { string_value: "ingress-nginx" }]
+  }];
+  int32 weight = 2 [(mcp.options.v1.field) = {
+    description: "Module weight from spec.weight controlling load order. 0 if not set."
+    minimum: 0
+  }];
+  string source = 3 [(mcp.options.v1.field) = {
+    description: "ModuleSource that provides this module (from spec.source). Empty for embedded Deckhouse modules."
+  }];
+  string state = 4 [(mcp.options.v1.field) = {
+    description: "Current lifecycle state from status.phase (e.g. Enabled, Disabled, Available)."
+    examples: [{ string_value: "Enabled" }, { string_value: "Disabled" }]
+  }];
+}
+
+// UpdateModuleSettingsRequest carries a partial settings document to merge.
+message UpdateModuleSettingsRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleConfig resource name (same as the module name, e.g. cert-manager)."
+    examples: [{ string_value: "cert-manager" }, { string_value: "ingress-nginx" }]
+    min_length: 1
+  }];
+  google.protobuf.Struct settings = 2 [(mcp.options.v1.field) = {
+    description: "Settings document to merge into ModuleConfig.spec.settings using JSON Merge Patch (RFC 7396). Top-level keys absent in this object are preserved; explicit null values remove the corresponding key; new values overwrite existing ones. Must contain at least one field."
+  }];
+}
+
+// UpdateModuleSettingsResponse reports the result of a settings merge.
+message UpdateModuleSettingsResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the UpdateModuleSettings operation."
+  };
+
+  bool updated = 1 [(mcp.options.v1.field) = {
+    description: "Whether the ModuleConfig was successfully updated. False if the merged settings were byte-identical to the existing ones (no-op)."
   }];
 }

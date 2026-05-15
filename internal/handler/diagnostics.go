@@ -630,6 +630,87 @@ func applyGrepFilter(logs string, req *pb.GetDeckhouseLogsRequest) string {
 	return builder.String()
 }
 
+// GetNodeEvents returns Kubernetes Events whose involvedObject.name matches the given node name.
+func (h *DiagnosticsHandler) GetNodeEvents(
+	ctx context.Context,
+	req *pb.GetNodeEventsRequest,
+) (*pb.GetNodeEventsResponse, error) {
+	rawEvents, err := h.client.ListNodeEvents(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("listing events for node %s: %w", req.GetName(), err)
+	}
+
+	events := make([]*pb.NodeEvent, 0, len(rawEvents))
+	for _, event := range rawEvents {
+		events = append(events, &pb.NodeEvent{
+			Reason:   event.Reason,
+			Message:  event.Message,
+			Type:     event.Type,
+			LastTime: event.LastTimestamp.UTC().Format(time.RFC3339),
+			Count:    event.Count,
+		})
+	}
+
+	return &pb.GetNodeEventsResponse{Events: events}, nil
+}
+
+// GetStaticInstance returns detailed information for a single StaticInstance resource.
+func (h *DiagnosticsHandler) GetStaticInstance(
+	ctx context.Context,
+	req *pb.GetStaticInstanceRequest,
+) (*pb.GetStaticInstanceResponse, error) {
+	instance, err := h.client.GetStaticInstance(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("getting static instance %s: %w", req.GetName(), err)
+	}
+
+	name := unstructuredNestedString(instance.Object, "metadata", "name")
+	address := unstructuredNestedString(instance.Object, "spec", "address")
+	phase := unstructuredNestedString(instance.Object, "status", "currentStatus", "phase")
+	credentialsRef := unstructuredNestedString(instance.Object, "spec", "credentialsRef", "name")
+	nodeRef := unstructuredNestedString(instance.Object, "status", "nodeRef", "name")
+	labels := unstructuredNestedStringMap(instance.Object, "metadata", "labels")
+
+	return &pb.GetStaticInstanceResponse{
+		Name:           name,
+		Address:        address,
+		Phase:          phase,
+		CredentialsRef: credentialsRef,
+		NodeRef:        nodeRef,
+		Labels:         labels,
+	}, nil
+}
+
+// GetPodLogs fetches logs for a specific pod and optional container.
+func (h *DiagnosticsHandler) GetPodLogs(
+	ctx context.Context,
+	req *pb.GetPodLogsRequest,
+) (*pb.GetPodLogsResponse, error) {
+	container := ""
+	if req.Container != nil {
+		container = req.GetContainer()
+	}
+
+	var tailLines *int64
+
+	if req.Tail != nil {
+		lines := int64(req.GetTail())
+		tailLines = &lines
+	}
+
+	var since *string
+	if req.Since != nil {
+		since = req.Since
+	}
+
+	logs, err := h.client.GetPodLogs(ctx, req.GetNamespace(), req.GetPod(), container, tailLines, since)
+	if err != nil {
+		return nil, fmt.Errorf("getting pod logs for %s/%s: %w", req.GetNamespace(), req.GetPod(), err)
+	}
+
+	return &pb.GetPodLogsResponse{Logs: logs}, nil
+}
+
 func (h *DiagnosticsHandler) collectNodeSummary(ctx context.Context) (*pb.NodeSummary, error) {
 	nodes, err := h.client.ListNodes(ctx)
 	if err != nil {

@@ -21,6 +21,9 @@ type DiagnosticsAPIToolHandler interface {
 	GetNode(ctx context.Context, req *GetNodeRequest) (*GetNodeResponse, error)
 	GetNodeGroup(ctx context.Context, req *GetNodeGroupRequest) (*GetNodeGroupResponse, error)
 	GetDeckhouseLogs(ctx context.Context, req *GetDeckhouseLogsRequest) (*GetDeckhouseLogsResponse, error)
+	GetNodeEvents(ctx context.Context, req *GetNodeEventsRequest) (*GetNodeEventsResponse, error)
+	GetStaticInstance(ctx context.Context, req *GetStaticInstanceRequest) (*GetStaticInstanceResponse, error)
+	GetPodLogs(ctx context.Context, req *GetPodLogsRequest) (*GetPodLogsResponse, error)
 }
 
 // RegisterDiagnosticsAPITools registers generated MCP tools for DiagnosticsAPI.
@@ -148,6 +151,51 @@ func RegisterDiagnosticsAPITools(server *mcp.Server, impl DiagnosticsAPIToolHand
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetNodeEventsRequest, *GetNodeEventsResponse]{
+		Name:             "GetNodeEvents",
+		Title:            "Get node events",
+		Description:      "Return Kubernetes Events whose involvedObject.name matches the given node name. Limited to the most recent 10 events as enforced by the API server.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetNodeEvents_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetNodeEvents_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetNodeEventsRequest { return &GetNodeEventsRequest{} },
+		NewResponse:      func() *GetNodeEventsResponse { return &GetNodeEventsResponse{} },
+		Handler:          impl.GetNodeEvents,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetStaticInstanceRequest, *GetStaticInstanceResponse]{
+		Name:             "GetStaticInstance",
+		Title:            "Get static instance",
+		Description:      "Detailed information for a single StaticInstance resource: address, phase, credentials reference, bound node name, and labels.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetStaticInstance_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetStaticInstance_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetStaticInstanceRequest { return &GetStaticInstanceRequest{} },
+		NewResponse:      func() *GetStaticInstanceResponse { return &GetStaticInstanceResponse{} },
+		Handler:          impl.GetStaticInstance,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*GetPodLogsRequest, *GetPodLogsResponse]{
+		Name:             "GetPodLogs",
+		Title:            "Get pod logs",
+		Description:      "Fetch logs from a specific pod and optional container. Supports tail line count and time window (e.g. '30m', '1h'). If container is omitted, the default container is used.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  DiagnosticsAPI_GetPodLogs_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: DiagnosticsAPI_GetPodLogs_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *GetPodLogsRequest { return &GetPodLogsRequest{} },
+		NewResponse:      func() *GetPodLogsResponse { return &GetPodLogsResponse{} },
+		Handler:          impl.GetPodLogs,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -182,3 +230,15 @@ const DiagnosticsAPI_GetNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object
 const DiagnosticsAPI_GetDeckhouseLogs_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"grep\":{\"type\":[\"string\",\"null\"],\"description\":\"Filter log lines to those containing this substring (case-sensitive).\",\"examples\":[\"example\"]},\"since\":{\"type\":[\"string\",\"null\"],\"description\":\"Return logs since this duration ago (e.g. '30m', '2h').\",\"examples\":[\"30m\",\"1h\"]},\"tail\":{\"type\":[\"integer\",\"null\"],\"description\":\"Number of log lines to return from the end. Default: 100.\",\"examples\":[-1],\"minimum\":1,\"maximum\":10000}},\"description\":\"GetDeckhouseLogsRequest contains optional log filtering parameters.\",\"examples\":[{\"grep\":\"example\",\"since\":\"example\",\"tail\":-1}],\"additionalProperties\":false}"
 
 const DiagnosticsAPI_GetDeckhouseLogs_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"logs\":{\"type\":\"string\",\"description\":\"Log output as a single string with newline-separated lines.\",\"examples\":[\"example\"]}},\"description\":\"GetDeckhouseLogsResponse contains the log output.\",\"examples\":[{\"logs\":\"example\"}],\"required\":[\"logs\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNodeEvents_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the Node whose events to fetch (matched against involvedObject.name).\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"GetNodeEventsRequest contains the node name to fetch events for.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetNodeEvents_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"events\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\",\"description\":\"Number of times this event has occurred.\",\"examples\":[-1],\"minimum\":1},\"lastTime\":{\"type\":\"string\",\"description\":\"Timestamp of the last occurrence of this event.\",\"examples\":[\"example\"],\"format\":\"date-time\"},\"message\":{\"type\":\"string\",\"description\":\"Human-readable event message.\",\"examples\":[\"example\"]},\"reason\":{\"type\":\"string\",\"description\":\"Short reason for the event (e.g. NodeReady, NodeNotReady).\",\"examples\":[\"example\"]},\"type\":{\"type\":\"string\",\"description\":\"Event type: Normal or Warning.\",\"examples\":[\"Normal\",\"Warning\"]}},\"description\":\"Kubernetes Events involving the requested node, ordered as returned by the API server (most recent first, limited to 10).\\n\\nA Kubernetes event related to a node.\",\"examples\":[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}],\"required\":[\"reason\",\"message\",\"type\",\"lastTime\",\"count\"],\"additionalProperties\":false},\"description\":\"Kubernetes Events involving the requested node, ordered as returned by the API server (most recent first, limited to 10).\\n\\nA Kubernetes event related to a node.\",\"examples\":[[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}]]}},\"description\":\"GetNodeEventsResponse contains the list of Kubernetes Events for a node.\",\"examples\":[{\"events\":[{\"count\":-1,\"lastTime\":\"example\",\"message\":\"example\",\"reason\":\"example\",\"type\":\"example\"}]}],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetStaticInstance_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the StaticInstance resource.\",\"examples\":[\"worker-01\"],\"minLength\":1}},\"description\":\"GetStaticInstanceRequest contains the StaticInstance name.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetStaticInstance_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\",\"description\":\"IP address of the server.\",\"examples\":[\"example\"],\"format\":\"ipv4\"},\"credentialsRef\":{\"type\":\"string\",\"description\":\"Name of the referenced SSHCredentials resource (from spec.credentialsRef.name).\",\"examples\":[\"worker-01-ssh\"]},\"labels\":{\"type\":[\"object\",\"null\"],\"description\":\"Labels attached to the StaticInstance for NodeGroup binding.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"name\":{\"type\":\"string\",\"description\":\"StaticInstance resource name.\",\"examples\":[\"example\"]},\"nodeRef\":{\"type\":\"string\",\"description\":\"Name of the bound Kubernetes Node object. Empty if not yet joined.\",\"examples\":[\"example\"]},\"phase\":{\"type\":\"string\",\"description\":\"Current lifecycle phase from status.currentStatus.phase: Pending, Bootstrapping, Running, Cleaning, or Error. Empty if status is not yet populated.\",\"examples\":[\"Running\",\"Pending\"]}},\"description\":\"Full details of a single StaticInstance resource.\",\"examples\":[{\"address\":\"example\",\"credentialsRef\":\"example\",\"labels\":{\"key\":\"example\"},\"name\":\"example\",\"nodeRef\":\"example\",\"phase\":\"example\"}],\"required\":[\"name\",\"address\",\"phase\",\"credentialsRef\",\"nodeRef\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetPodLogs_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"container\":{\"type\":[\"string\",\"null\"],\"description\":\"Container name. If omitted, the default container (first container) is used.\",\"examples\":[\"deckhouse\"]},\"namespace\":{\"type\":\"string\",\"description\":\"Namespace of the pod.\",\"examples\":[\"d8-system\",\"kube-system\"],\"minLength\":1},\"pod\":{\"type\":\"string\",\"description\":\"Pod name.\",\"examples\":[\"deckhouse-7d8c8f5b4d-abcde\"],\"minLength\":1},\"since\":{\"type\":[\"string\",\"null\"],\"description\":\"Return logs since this duration ago (e.g. '30m', '2h').\",\"examples\":[\"30m\",\"1h\"]},\"tail\":{\"type\":[\"integer\",\"null\"],\"description\":\"Number of log lines to return from the end.\",\"examples\":[-1],\"minimum\":1,\"maximum\":10000}},\"description\":\"GetPodLogsRequest contains pod identification and log filtering parameters.\",\"examples\":[{\"container\":\"example\",\"namespace\":\"example\",\"pod\":\"example\",\"since\":\"example\",\"tail\":-1}],\"required\":[\"namespace\",\"pod\"],\"additionalProperties\":false}"
+
+const DiagnosticsAPI_GetPodLogs_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"logs\":{\"type\":\"string\",\"description\":\"Log output as a single string with newline-separated lines.\",\"examples\":[\"example\"]}},\"description\":\"GetPodLogsResponse contains the log output.\",\"examples\":[{\"logs\":\"example\"}],\"required\":[\"logs\"],\"additionalProperties\":false}"

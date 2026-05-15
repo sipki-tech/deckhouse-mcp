@@ -599,3 +599,482 @@ func TestWaitNodeReady_Timeout(t *testing.T) {
 		t.Errorf("expected Bootstrapping, got %s", resp.Phase)
 	}
 }
+
+func TestCordonNode_Happy(t *testing.T) {
+	cordoned := false
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec:       corev1.NodeSpec{Unschedulable: false},
+			}, nil
+		},
+		cordonNodeFunc: func(_ context.Context, name string) error {
+			if name != "worker-01" {
+				t.Errorf("expected name worker-01, got %q", name)
+			}
+			cordoned = true
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.CordonNode(context.Background(), &pb.CordonNodeRequest{Name: "worker-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cordoned {
+		t.Error("expected CordonNode to be called")
+	}
+	if resp.PreviousState {
+		t.Error("expected previousState=false (was not cordoned)")
+	}
+}
+
+func TestCordonNode_AlreadyCordoned(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}, nil
+		},
+		cordonNodeFunc: func(_ context.Context, _ string) error {
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.CordonNode(context.Background(), &pb.CordonNodeRequest{Name: "worker-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.PreviousState {
+		t.Error("expected previousState=true (already cordoned)")
+	}
+}
+
+func TestCordonNode_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return nil, fmt.Errorf("node %q not found", name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CordonNode(context.Background(), &pb.CordonNodeRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestUncordonNode_Happy(t *testing.T) {
+	uncordoned := false
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}, nil
+		},
+		uncordonNodeFunc: func(_ context.Context, _ string) error {
+			uncordoned = true
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.UncordonNode(context.Background(), &pb.UncordonNodeRequest{Name: "node-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetPreviousState() {
+		t.Error("expected previousState=true (was cordoned)")
+	}
+	if !uncordoned {
+		t.Error("expected UncordonNode to be called")
+	}
+}
+
+func TestUncordonNode_AlreadyUncordoned(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec:       corev1.NodeSpec{Unschedulable: false},
+			}, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.UncordonNode(context.Background(), &pb.UncordonNodeRequest{Name: "node-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetPreviousState() {
+		t.Error("expected previousState=false (was already uncordoned)")
+	}
+}
+
+func TestUncordonNode_NotFound(t *testing.T) {
+	mc := &mockClient{
+		getNodeFunc: func(_ context.Context, name string) (*corev1.Node, error) {
+			return nil, fmt.Errorf("node %q not found", name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.UncordonNode(context.Background(), &pb.UncordonNodeRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestDeleteSSHCredentials_Happy(t *testing.T) {
+	deleted := ""
+	mc := &mockClient{
+		deleteSSHCredentialsFunc: func(_ context.Context, name string) error {
+			deleted = name
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.DeleteSSHCredentials(context.Background(), &pb.DeleteSSHCredentialsRequest{Name: "creds-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetDeleted() {
+		t.Error("expected deleted=true")
+	}
+	if deleted != "creds-1" {
+		t.Errorf("expected deletion of creds-1, got %q", deleted)
+	}
+}
+
+func TestDeleteSSHCredentials_NotFound(t *testing.T) {
+	mc := &mockClient{
+		deleteSSHCredentialsFunc: func(_ context.Context, name string) error {
+			return errors.NewNotFound(schema.GroupResource{Group: "deckhouse.io", Resource: "sshcredentials"}, name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.DeleteSSHCredentials(context.Background(), &pb.DeleteSSHCredentialsRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestDeleteNodeGroup_Happy(t *testing.T) {
+	deleted := ""
+	mc := &mockClient{
+		deleteNodeGroupFunc: func(_ context.Context, name string) error {
+			deleted = name
+			return nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	resp, err := h.DeleteNodeGroup(context.Background(), &pb.DeleteNodeGroupRequest{Name: "workers"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetDeleted() {
+		t.Error("expected deleted=true")
+	}
+	if deleted != "workers" {
+		t.Errorf("expected deletion of 'workers', got %q", deleted)
+	}
+}
+
+func TestDeleteNodeGroup_NotFound(t *testing.T) {
+	mc := &mockClient{
+		deleteNodeGroupFunc: func(_ context.Context, name string) error {
+			return errors.NewNotFound(schema.GroupResource{Group: "deckhouse.io", Resource: "nodegroups"}, name)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.DeleteNodeGroup(context.Background(), &pb.DeleteNodeGroupRequest{Name: "missing"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+// makeDrainPod returns a pod scheduled on nodeName with optional ownerRef and annotations.
+func makeDrainPod(namespace, name, nodeName string, ownerRefs []metav1.OwnerReference, mirrorAnnotation bool) corev1.Pod {
+	annotations := map[string]string{}
+	if mirrorAnnotation {
+		annotations["kubernetes.io/config.mirror"] = "true"
+	}
+
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:       namespace,
+			Name:            name,
+			OwnerReferences: ownerRefs,
+			Annotations:     annotations,
+		},
+		Spec: corev1.PodSpec{NodeName: nodeName},
+	}
+}
+
+func dsOwner() []metav1.OwnerReference {
+	c := true
+	return []metav1.OwnerReference{
+		{
+			APIVersion: "apps/v1",
+			Kind:       "DaemonSet",
+			Name:       "ds-1",
+			Controller: &c,
+		},
+	}
+}
+
+func TestDrainNode_Happy(t *testing.T) {
+	cordoned := false
+	evicted := map[string]bool{}
+	mc := &mockClient{
+		cordonNodeFunc: func(_ context.Context, _ string) error {
+			cordoned = true
+			return nil
+		},
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+				makeDrainPod("default", "web-2", "node-1", nil, false),
+				makeDrainPod("default", "elsewhere", "node-2", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, namespace, name string) error {
+			evicted[namespace+"/"+name] = true
+			return nil
+		},
+	}
+
+	timeout := int32(30)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cordoned {
+		t.Error("expected cordon to be called")
+	}
+	if !resp.GetCordoned() {
+		t.Error("expected cordoned=true in response")
+	}
+	if resp.GetEvictedCount() != 2 {
+		t.Errorf("expected evictedCount=2, got %d", resp.GetEvictedCount())
+	}
+	if !evicted["default/web-1"] || !evicted["default/web-2"] {
+		t.Errorf("expected web-1 and web-2 evicted, got %v", evicted)
+	}
+	if evicted["default/elsewhere"] {
+		t.Error("must not evict pod on a different node")
+	}
+}
+
+func TestDrainNode_SkipsDaemonSet(t *testing.T) {
+	evicted := map[string]bool{}
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("kube-system", "ds-pod", "node-1", dsOwner(), false),
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, namespace, name string) error {
+			evicted[namespace+"/"+name] = true
+			return nil
+		},
+	}
+
+	timeout := int32(30)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetEvictedCount() != 1 {
+		t.Errorf("expected evictedCount=1, got %d", resp.GetEvictedCount())
+	}
+	if evicted["kube-system/ds-pod"] {
+		t.Error("DaemonSet pod must NOT be evicted")
+	}
+	if !evicted["default/web-1"] {
+		t.Error("regular pod must be evicted")
+	}
+}
+
+func TestDrainNode_SkipsMirror(t *testing.T) {
+	evicted := map[string]bool{}
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("kube-system", "static-apiserver", "node-1", nil, true),
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, namespace, name string) error {
+			evicted[namespace+"/"+name] = true
+			return nil
+		},
+	}
+
+	timeout := int32(30)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetEvictedCount() != 1 {
+		t.Errorf("expected evictedCount=1, got %d", resp.GetEvictedCount())
+	}
+	if evicted["kube-system/static-apiserver"] {
+		t.Error("mirror pod must NOT be evicted")
+	}
+}
+
+func TestDrainNode_CordonFails(t *testing.T) {
+	listed := false
+	mc := &mockClient{
+		cordonNodeFunc: func(_ context.Context, _ string) error {
+			return fmt.Errorf("cordon failure")
+		},
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			listed = true
+			return nil, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{Name: "node-1"})
+	if err == nil {
+		t.Fatal("expected error from cordon failure, got nil")
+	}
+	if listed {
+		t.Error("ListPods must NOT be called when cordon fails")
+	}
+}
+
+func TestDrainNode_PodAlreadyGone(t *testing.T) {
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, _, name string) error {
+			return errors.NewNotFound(schema.GroupResource{Resource: "pods"}, name)
+		},
+	}
+
+	timeout := int32(30)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// IsNotFound counts as evicted (pod already gone).
+	if resp.GetEvictedCount() != 1 {
+		t.Errorf("expected evictedCount=1 (gone counts as evicted), got %d", resp.GetEvictedCount())
+	}
+	if len(resp.GetFailedPods()) != 0 {
+		t.Errorf("expected no failed_pods, got %v", resp.GetFailedPods())
+	}
+}
+
+func TestDrainNode_PDBBlocksThenSucceeds(t *testing.T) {
+	if testing.Short() {
+		t.Skip("polling test, run with full -test.timeout")
+	}
+
+	var calls int32
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, _, name string) error {
+			calls++
+			if calls == 1 {
+				return errors.NewTooManyRequests(fmt.Sprintf("evicting %q would violate the budget", name), 1)
+			}
+			return nil
+		},
+	}
+
+	timeout := int32(120)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetCordoned() {
+		t.Error("expected cordoned=true")
+	}
+	if resp.GetEvictedCount() != 1 {
+		t.Errorf("expected evictedCount=1 after retry, got %d", resp.GetEvictedCount())
+	}
+	if calls < 2 {
+		t.Errorf("expected at least 2 EvictPod calls (PDB retry), got %d", calls)
+	}
+}
+
+func TestDrainNode_Timeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("polling test, run with full -test.timeout")
+	}
+
+	mc := &mockClient{
+		listPodsFunc: func(_ context.Context, _ string) ([]corev1.Pod, error) {
+			return []corev1.Pod{
+				makeDrainPod("default", "web-1", "node-1", nil, false),
+			}, nil
+		},
+		evictPodFunc: func(_ context.Context, _, name string) error {
+			// Always blocked by PDB.
+			return errors.NewTooManyRequests(fmt.Sprintf("evicting %q would violate the budget", name), 1)
+		},
+	}
+
+	timeout := int32(30)
+	h := NewNodesHandler(mc)
+
+	resp, err := h.DrainNode(context.Background(), &pb.DrainNodeRequest{
+		Name:           "node-1",
+		TimeoutSeconds: &timeout,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetTimedOut() {
+		t.Error("expected timedOut=true")
+	}
+	if resp.GetEvictedCount() != 0 {
+		t.Errorf("expected evictedCount=0, got %d", resp.GetEvictedCount())
+	}
+}

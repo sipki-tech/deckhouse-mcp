@@ -84,6 +84,33 @@ service DiagnosticsAPI {
       annotations: { read_only_hint: true }
     };
   }
+
+  // GetNodeEvents returns Kubernetes Events for a specific node.
+  rpc GetNodeEvents(GetNodeEventsRequest) returns (GetNodeEventsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Get node events"
+      description: "Return Kubernetes Events whose involvedObject.name matches the given node name. Limited to the most recent 10 events as enforced by the API server."
+      annotations: { read_only_hint: true }
+    };
+  }
+
+  // GetStaticInstance returns detailed information for a single StaticInstance.
+  rpc GetStaticInstance(GetStaticInstanceRequest) returns (GetStaticInstanceResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Get static instance"
+      description: "Detailed information for a single StaticInstance resource: address, phase, credentials reference, bound node name, and labels."
+      annotations: { read_only_hint: true }
+    };
+  }
+
+  // GetPodLogs returns logs for a specific pod by namespace and name.
+  rpc GetPodLogs(GetPodLogsRequest) returns (GetPodLogsResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Get pod logs"
+      description: "Fetch logs from a specific pod and optional container. Supports tail line count and time window (e.g. '30m', '1h'). If container is omitted, the default container is used."
+      annotations: { read_only_hint: true }
+    };
+  }
 }
 
 // GetClusterStatusResponse contains aggregated cluster status.
@@ -482,6 +509,92 @@ message GetDeckhouseLogsRequest {
 
 // GetDeckhouseLogsResponse contains the log output.
 message GetDeckhouseLogsResponse {
+  string logs = 1 [(mcp.options.v1.field) = {
+    description: "Log output as a single string with newline-separated lines."
+  }];
+}
+
+// GetNodeEventsRequest contains the node name to fetch events for.
+message GetNodeEventsRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the Node whose events to fetch (matched against involvedObject.name)."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+}
+
+// GetNodeEventsResponse contains the list of Kubernetes Events for a node.
+message GetNodeEventsResponse {
+  repeated NodeEvent events = 1 [(mcp.options.v1.field) = {
+    description: "Kubernetes Events involving the requested node, ordered as returned by the API server (most recent first, limited to 10)."
+  }];
+}
+
+// GetStaticInstanceRequest contains the StaticInstance name.
+message GetStaticInstanceRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Name of the StaticInstance resource."
+    examples: [{ string_value: "worker-01" }]
+    min_length: 1
+  }];
+}
+
+// GetStaticInstanceResponse contains the detailed StaticInstance information.
+message GetStaticInstanceResponse {
+  option (mcp.options.v1.message) = {
+    description: "Full details of a single StaticInstance resource."
+  };
+
+  string name = 1 [(mcp.options.v1.field) = { description: "StaticInstance resource name." }];
+  string address = 2 [(mcp.options.v1.field) = {
+    description: "IP address of the server."
+    format: "ipv4"
+  }];
+  string phase = 3 [(mcp.options.v1.field) = {
+    description: "Current lifecycle phase from status.currentStatus.phase: Pending, Bootstrapping, Running, Cleaning, or Error. Empty if status is not yet populated."
+    examples: [{ string_value: "Running" }, { string_value: "Pending" }]
+  }];
+  string credentials_ref = 4 [(mcp.options.v1.field) = {
+    description: "Name of the referenced SSHCredentials resource (from spec.credentialsRef.name)."
+    examples: [{ string_value: "worker-01-ssh" }]
+  }];
+  string node_ref = 5 [(mcp.options.v1.field) = {
+    description: "Name of the bound Kubernetes Node object. Empty if not yet joined."
+  }];
+  map<string, string> labels = 6 [(mcp.options.v1.field) = {
+    description: "Labels attached to the StaticInstance for NodeGroup binding."
+  }];
+}
+
+// GetPodLogsRequest contains pod identification and log filtering parameters.
+message GetPodLogsRequest {
+  string namespace = 1 [(mcp.options.v1.field) = {
+    description: "Namespace of the pod."
+    examples: [{ string_value: "d8-system" }, { string_value: "kube-system" }]
+    min_length: 1
+  }];
+  string pod = 2 [(mcp.options.v1.field) = {
+    description: "Pod name."
+    examples: [{ string_value: "deckhouse-7d8c8f5b4d-abcde" }]
+    min_length: 1
+  }];
+  optional string container = 3 [(mcp.options.v1.field) = {
+    description: "Container name. If omitted, the default container (first container) is used."
+    examples: [{ string_value: "deckhouse" }]
+  }];
+  optional int32 tail = 4 [(mcp.options.v1.field) = {
+    description: "Number of log lines to return from the end."
+    minimum: 1
+    maximum: 10000
+  }];
+  optional string since = 5 [(mcp.options.v1.field) = {
+    description: "Return logs since this duration ago (e.g. '30m', '2h')."
+    examples: [{ string_value: "30m" }, { string_value: "1h" }]
+  }];
+}
+
+// GetPodLogsResponse contains the log output.
+message GetPodLogsResponse {
   string logs = 1 [(mcp.options.v1.field) = {
     description: "Log output as a single string with newline-separated lines."
   }];

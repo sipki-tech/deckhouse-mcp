@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased] — P2 — Advanced Management
+
+16 new MCP handlers across 3 batches (read-only, writes, sources). Brings the tool catalog from 23 (P0+P1) to 39 total.
+
+### Added
+
+#### Batch 1 — Read-only diagnostics & module/node introspection (6 handlers)
+
+- `deckhouse_GetNodeEvents` — list Kubernetes events scoped to a single node
+- `deckhouse_GetPodLogs` — fetch container logs with `tail` and `since` parameters
+- `deckhouse_GetStaticInstance` — get a single `StaticInstance` with labels and last-update time
+- `deckhouse_ListModules` — list `Module` CRDs (status, weight, source)
+- `deckhouse_CordonNode` — mark a node unschedulable; idempotent (returns `previousState`)
+- `deckhouse_GetStaticClusterConfiguration` — read `static-cluster-configuration.yaml` from the `d8-cluster-configuration` Secret
+
+#### Batch 2 — Write operations & cluster configuration (6 handlers)
+
+- `deckhouse_UpdateModuleSettings` — RFC 7396 JSON Merge Patch on `ModuleConfig.spec.settings`; explicit `null` deletes keys
+- `deckhouse_UncordonNode` — mark a node schedulable; idempotent skip if already schedulable
+- `deckhouse_DrainNode` — composite: cordon → list non-DaemonSet/non-mirror pods → eviction loop with PDB awareness; 30s polling, default 300s timeout
+- `deckhouse_DeleteSSHCredentials` — delete `SSHCredentials` CRD
+- `deckhouse_DeleteNodeGroup` — delete `NodeGroup` CRD
+- `deckhouse_UpdateKubernetesVersion` — patch `kubernetesVersion` in `d8-cluster-configuration` Secret with retry-on-conflict (up to 3 attempts), YAML round-trip via `sigs.k8s.io/yaml`
+
+#### Batch 3 — Module sources & update policies (4 handlers)
+
+- `deckhouse_ListModuleSources` — list `ModuleSource` CRDs with registry and status
+- `deckhouse_CreateModuleSource` — create `ModuleSource` CRD with registry repo
+- `deckhouse_ListModuleUpdatePolicies` — list `ModuleUpdatePolicy` CRDs with update mode
+- `deckhouse_CreateModuleUpdatePolicy` — create `ModuleUpdatePolicy` CRD with update mode
+
+#### Infrastructure
+
+- New proto file `proto/deckhouse/v1/sources.proto` (`SourcesAPI` service)
+- `k8s.Client` interface: +13 methods (`ListNodeEvents`, `GetPodLogs`, `GetSecret`, `GetModuleConfig`, `UpdateModuleConfig`, `GetNode`, `CordonNode`, `ListModules`, `UncordonNode`, `EvictPod`, `UpdateSecret`, `DeleteSSHCredentials`, `DeleteNodeGroup`, `ListModuleSources`, `CreateModuleSource`, `ListModuleUpdatePolicies`, `CreateModuleUpdatePolicy`)
+- 2 new GVR constants: `ModuleSourceGVR`, `ModuleUpdatePolicyGVR` (deckhouse.io/v1alpha1)
+- New handler file `internal/handler/sources.go` (`SourcesHandler`)
+- Server registration: `pb.RegisterSourcesAPITools` (6th `Register*APITools` in `cmd/deckhouse-mcp/main.go`)
+- Integration CRDs: `modulesources.deckhouse.io`, `moduleupdatepolicies.deckhouse.io` in `tests/integration/crds.yaml`
+
+#### RBAC (least-privilege expansion)
+
+- Read: `events`, `pods/log`, `modules`, `modulesources`, `moduleupdatepolicies`
+- Write: `secrets` update on `d8-cluster-configuration`; `nodes` update/patch; `pods/eviction` create; `moduleconfigs` update; `deckhouserelease` patch; `staticinstances`/`sshcredentials`/`nodegroups` delete; `nodegroups` create; `modulesources`/`moduleupdatepolicies` create
+
+#### Tests
+
+- 77 new unit tests (115 total, up from 38 in P0)
+- Polling tests (`DrainNode_PDBBlocksThenSucceeds`, `DrainNode_Timeout`) — ~30s each
+- Mock `k8s.Client` extended with 17 new function-fields
+
+---
+
 ## [0.1.0] — 2026-04-13
 
 Initial release — MVP (P0) feature set. MCP server for managing Deckhouse Kubernetes Platform (Community Edition) over SSE transport, deployed as a Pod in `d8-system`.

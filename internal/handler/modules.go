@@ -2,11 +2,18 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sipki-tech/deckhouse-mcp/internal/k8s"
 	pb "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1"
 )
+
+// errNotImplemented is returned by GREEN-stub handler methods awaiting full implementation.
+var errNotImplemented = errors.New("not implemented")
+
+// errEmptyModuleSettings is returned when UpdateModuleSettings receives an empty patch.
+var errEmptyModuleSettings = errors.New("settings must be a non-empty object")
 
 // ModulesHandler implements pb.ModulesAPIToolHandler.
 type ModulesHandler struct {
@@ -130,6 +137,35 @@ func (h *ModulesHandler) DisableModule(
 	}, nil
 }
 
+// ListModules returns all Deckhouse Module runtime resources.
+func (h *ModulesHandler) ListModules(
+	ctx context.Context,
+	_ *pb.ListModulesRequest,
+) (*pb.ListModulesResponse, error) {
+	modules, err := h.client.ListModules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing modules: %w", err)
+	}
+
+	result := make([]*pb.ModuleInfo, 0, len(modules))
+
+	for _, module := range modules {
+		name := unstructuredNestedString(module.Object, "metadata", "name")
+		weight := unstructuredNestedInt64(module.Object, "spec", "weight")
+		source := unstructuredNestedString(module.Object, "spec", "source")
+		state := unstructuredNestedString(module.Object, "status", "phase")
+
+		result = append(result, &pb.ModuleInfo{
+			Name:   name,
+			Weight: clampInt32(weight),
+			Source: source,
+			State:  state,
+		})
+	}
+
+	return &pb.ListModulesResponse{Modules: result}, nil
+}
+
 // setModuleEnabled is the shared implementation for Enable/Disable.
 func (h *ModulesHandler) setModuleEnabled(
 	ctx context.Context,
@@ -169,4 +205,82 @@ func (h *ModulesHandler) setModuleEnabled(
 		Success:       true,
 		PreviousState: prevEnabled,
 	}, nil
+}
+
+// UpdateModuleSettings performs a deep merge (RFC 7396 JSON Merge Patch semantics)
+// of the supplied settings into the ModuleConfig's spec.settings.
+//
+// Rules:
+//   - patch[k] == nil      → delete k from target (RFC 7396 explicit deletion)
+//   - patch[k] is map      → recurse into target[k]
+//   - patch[k] is anything → replace target[k] entirely (arrays, scalars)
+//
+// An empty patch is rejected before any cluster call to avoid surprise no-ops.
+func (h *ModulesHandler) UpdateModuleSettings(
+	ctx context.Context,
+	req *pb.UpdateModuleSettingsRequest,
+) (*pb.UpdateModuleSettingsResponse, error) {
+	patch := req.GetSettings().AsMap()
+	if len(patch) == 0 {
+		return nil, errEmptyModuleSettings
+	}
+
+	moduleConfig, err := h.client.GetModuleConfig(ctx, req.GetName())
+	if err != nil {
+		return nil, fmt.Errorf("getting module config %s: %w", req.GetName(), err)
+	}
+
+	spec, ok := moduleConfig.Object["spec"].(map[string]any)
+	if !ok {
+		spec = make(map[string]any)
+		moduleConfig.Object["spec"] = spec
+	}
+
+	current, _ := spec["settings"].(map[string]any)
+	if current == nil {
+		current = make(map[string]any)
+	}
+
+	merged := mergeJSONPatch(current, patch)
+	spec["settings"] = merged
+
+	_, err = h.client.UpdateModuleConfig(ctx, moduleConfig)
+	if err != nil {
+		return nil, fmt.Errorf("updating module config %s: %w", req.GetName(), err)
+	}
+
+	return &pb.UpdateModuleSettingsResponse{Updated: true}, nil
+}
+
+// mergeJSONPatch applies RFC 7396 JSON Merge Patch semantics: explicit nil in
+// patch deletes the key in target; nested maps are merged recursively; everything
+// else replaces the value.
+func mergeJSONPatch(target, patch map[string]any) map[string]any {
+	if target == nil {
+		target = make(map[string]any)
+	}
+
+	for k, v := range patch {
+		if v == nil {
+			delete(target, k)
+
+			continue
+		}
+
+		patchMap, patchIsMap := v.(map[string]any)
+		if !patchIsMap {
+			target[k] = v
+
+			continue
+		}
+
+		existing, existingIsMap := target[k].(map[string]any)
+		if !existingIsMap {
+			existing = make(map[string]any)
+		}
+
+		target[k] = mergeJSONPatch(existing, patchMap)
+	}
+
+	return target
 }
