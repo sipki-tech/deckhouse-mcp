@@ -21,8 +21,8 @@ Handlers are implemented in priority order. Within a phase, dependencies are res
 | Phase | Handlers | Status |
 |-------|----------|--------|
 | P0 — MVP | A1, A2, A5, A7, A9, B1, C1, D1, D2, D4 | ✅ Done (10/10) |
-| P1 — Core Operations | A3, A6, A11, B2, B3, B4, C2, C3, D5, D6, D10, D12, E1 | 0/13 |
-| P2 — Advanced Management | A4, A8, A10, B5, B7, D3, D7, D8, D9, D11, E2, E3, F1, F2, F4, F5 | 0/16 |
+| P1 — Core Operations | A3, A6, A11, B2, B3, B4, C2, C3, D5, D6, D10, D12, E1 | ✅ Done (13/13) |
+| P2 — Advanced Management | A4, A8, A10, B5, B7, D3, D7, D8, D9, D11, E2, E3, F1, F2, F4, F5 | ✅ Done (16/16) |
 | P3 — Edge Cases | B6, D13, F3, F6 | 0/4 |
 
 ---
@@ -271,6 +271,6 @@ For each handler:
 ### Phase progress tracker
 
 - [x] **P0 — MVP** (10/10 handlers) — shipped
-- [ ] **P1 — Core Operations** (0/13 handlers)
-- [ ] **P2 — Advanced Management** (0/16 handlers)
+- [x] **P1 — Core Operations** (13/13 handlers) — shipped (`feat(p1)`, commit `4a23933`)
+- [x] **P2 — Advanced Management** (16/16 handlers) — shipped (`feat(p2)`, commit `ce83857`)
 - [ ] **P3 — Edge Cases** (0/4 handlers)
