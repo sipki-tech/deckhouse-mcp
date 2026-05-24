@@ -454,8 +454,8 @@ message NodeEvent {
     format: "date-time"
   }];
   int32 count = 5 [(mcp.options.v1.field) = {
-    description: "Number of times this event has occurred."
-    minimum: 1
+    description: "Number of times this event has occurred. Zero is valid for events emitted via the events.k8s.io/v1 API where the count starts at zero on the first occurrence."
+    minimum: 0
   }];
 }
 

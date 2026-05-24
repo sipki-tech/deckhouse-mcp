@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -14,6 +15,12 @@ var errNotImplemented = errors.New("not implemented")
 
 // errEmptyModuleSettings is returned when UpdateModuleSettings receives an empty patch.
 var errEmptyModuleSettings = errors.New("settings must be a non-empty object")
+
+// moduleMaintenanceModeActive is the Deckhouse-defined string value for
+// ModuleConfig.spec.maintenance that pauses enable/disable transitions while
+// allowing settings/version updates to continue. Confirmed via Deckhouse public
+// docs (kubernetes-platform/documentation/v1/cr.html and module-development).
+const moduleMaintenanceModeActive = "NoResourceReconciliation"
 
 // ModulesHandler implements pb.ModulesAPIToolHandler.
 type ModulesHandler struct {
@@ -250,6 +257,45 @@ func (h *ModulesHandler) UpdateModuleSettings(
 	}
 
 	return &pb.UpdateModuleSettingsResponse{Updated: true}, nil
+}
+
+// SetModuleMaintenance toggles ModuleConfig.spec.maintenance using a JSON merge
+// patch. When enabled=true, sets spec.maintenance="NoResourceReconciliation"
+// (Deckhouse stops applying enable/disable transitions). When enabled=false,
+// emits {"spec":{"maintenance":null}} — RFC 7396 removes the field.
+//
+// REQ-4.2: idempotent. REQ-4.4: not-found propagates as wrapped error.
+func (h *ModulesHandler) SetModuleMaintenance(
+	ctx context.Context,
+	req *pb.SetModuleMaintenanceRequest,
+) (*pb.SetModuleMaintenanceResponse, error) {
+	name := req.GetName()
+
+	var patch map[string]any
+	if req.GetEnabled() {
+		patch = map[string]any{
+			"spec": map[string]any{"maintenance": moduleMaintenanceModeActive},
+		}
+	} else {
+		patch = map[string]any{
+			"spec": map[string]any{"maintenance": nil},
+		}
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling maintenance patch for %s: %w", name, err)
+	}
+
+	_, err = h.client.PatchModuleConfig(ctx, name, patchBytes)
+	if err != nil {
+		return nil, fmt.Errorf("patching module config %s: %w", name, err)
+	}
+
+	return &pb.SetModuleMaintenanceResponse{
+		MaintenanceEnabled: req.GetEnabled(),
+		Name:               name,
+	}, nil
 }
 
 // mergeJSONPatch applies RFC 7396 JSON Merge Patch semantics: explicit nil in

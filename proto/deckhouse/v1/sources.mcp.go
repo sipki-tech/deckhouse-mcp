@@ -8,6 +8,7 @@ import (
 	errors "errors"
 	mcpruntime "github.com/easyp-tech/protoc-gen-mcp/mcpruntime"
 	mcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	proto "google.golang.org/protobuf/proto"
 )
 
 // SourcesAPIToolHandler defines the business logic required by generated MCP tools.
@@ -16,6 +17,8 @@ type SourcesAPIToolHandler interface {
 	CreateModuleSource(ctx context.Context, req *CreateModuleSourceRequest) (*CreateModuleSourceResponse, error)
 	ListModuleUpdatePolicies(ctx context.Context, req *ListModuleUpdatePoliciesRequest) (*ListModuleUpdatePoliciesResponse, error)
 	CreateModuleUpdatePolicy(ctx context.Context, req *CreateModuleUpdatePolicyRequest) (*CreateModuleUpdatePolicyResponse, error)
+	ListModuleReleases(ctx context.Context, req *ListModuleReleasesRequest) (*ListModuleReleasesResponse, error)
+	DeleteModuleSource(ctx context.Context, req *DeleteModuleSourceRequest) (*DeleteModuleSourceResponse, error)
 }
 
 // RegisterSourcesAPITools registers generated MCP tools for SourcesAPI.
@@ -83,6 +86,36 @@ func RegisterSourcesAPITools(server *mcp.Server, impl SourcesAPIToolHandler, opt
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*ListModuleReleasesRequest, *ListModuleReleasesResponse]{
+		Name:             "ListModuleReleases",
+		Title:            "List module releases",
+		Description:      "List ModuleRelease resources (available versions) for a specific module. Filtering by module_name is required; optional phase filter narrows results to one lifecycle state.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  SourcesAPI_ListModuleReleases_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: SourcesAPI_ListModuleReleases_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *ListModuleReleasesRequest { return &ListModuleReleasesRequest{} },
+		NewResponse:      func() *ListModuleReleasesResponse { return &ListModuleReleasesResponse{} },
+		Handler:          impl.ListModuleReleases,
+	}, opts...); err != nil {
+		return err
+	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*DeleteModuleSourceRequest, *DeleteModuleSourceResponse]{
+		Name:             "DeleteModuleSource",
+		Title:            "Delete module source",
+		Description:      "Delete a ModuleSource. By default (force=false), the request fails when active ModuleRelease resources reference the source. Pass force=true to bypass the safety check and rely on Deckhouse owner references for cascade cleanup.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  SourcesAPI_DeleteModuleSource_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: SourcesAPI_DeleteModuleSource_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{DestructiveHint: proto.Bool(true)},
+		Icons:            nil,
+		NewRequest:       func() *DeleteModuleSourceRequest { return &DeleteModuleSourceRequest{} },
+		NewResponse:      func() *DeleteModuleSourceResponse { return &DeleteModuleSourceResponse{} },
+		Handler:          impl.DeleteModuleSource,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -98,6 +131,14 @@ const SourcesAPI_ListModuleUpdatePolicies_ToolSpecInputSchemaJSON = "{\"type\":\
 
 const SourcesAPI_ListModuleUpdatePolicies_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"policies\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleUpdatePolicy resource name.\",\"examples\":[\"auto\",\"manual\"]},\"updateMode\":{\"type\":\"string\",\"description\":\"Update mode from spec.update.mode.\",\"examples\":[\"Auto\",\"Manual\"]}},\"description\":\"All ModuleUpdatePolicy resources in the cluster.\\n\\nDeckhouse ModuleUpdatePolicy resource — auto-update policy for modules.\",\"examples\":[{\"name\":\"example\",\"updateMode\":\"example\"}],\"required\":[\"name\",\"updateMode\"],\"additionalProperties\":false},\"description\":\"All ModuleUpdatePolicy resources in the cluster.\\n\\nDeckhouse ModuleUpdatePolicy resource — auto-update policy for modules.\",\"examples\":[[{\"name\":\"example\",\"updateMode\":\"example\"}]]}},\"description\":\"ListModuleUpdatePoliciesResponse contains all ModuleUpdatePolicy resources.\",\"examples\":[{\"policies\":[{\"name\":\"example\",\"updateMode\":\"example\"}]}],\"additionalProperties\":false}"
 
-const SourcesAPI_CreateModuleUpdatePolicy_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleUpdatePolicy resource name.\",\"examples\":[\"auto\"],\"minLength\":1},\"updateMode\":{\"type\":\"string\",\"description\":\"Update mode to set in spec.update.mode.\",\"examples\":[\"Auto\",\"Manual\"],\"minLength\":1}},\"description\":\"CreateModuleUpdatePolicyRequest contains the name and update mode.\",\"examples\":[{\"name\":\"example\",\"updateMode\":\"example\"}],\"required\":[\"name\",\"updateMode\"],\"additionalProperties\":false}"
+const SourcesAPI_CreateModuleUpdatePolicy_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"matchLabels\":{\"type\":[\"object\",\"null\"],\"description\":\"Label selector for spec.moduleReleaseSelector.labelSelector.matchLabels — required by the Deckhouse webhook. Each entry binds the policy to ModuleRelease resources whose labels include the given key/value. Most common key is \\\"module\\\" with the module name as value.\",\"examples\":[{\"key\":\"example\"}],\"additionalProperties\":{\"type\":\"string\"},\"propertyNames\":{\"type\":\"string\"}},\"name\":{\"type\":\"string\",\"description\":\"ModuleUpdatePolicy resource name.\",\"examples\":[\"auto\"],\"minLength\":1},\"updateMode\":{\"type\":\"string\",\"description\":\"Update mode to set in spec.update.mode.\",\"examples\":[\"Auto\",\"Manual\"],\"minLength\":1}},\"description\":\"CreateModuleUpdatePolicyRequest contains the name and update mode.\",\"examples\":[{\"matchLabels\":{\"key\":\"example\"},\"name\":\"example\",\"updateMode\":\"example\"}],\"required\":[\"name\",\"updateMode\"],\"additionalProperties\":false}"
 
 const SourcesAPI_CreateModuleUpdatePolicy_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"created\":{\"type\":\"boolean\",\"description\":\"Whether the ModuleUpdatePolicy was successfully created.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"Name of the created ModuleUpdatePolicy (echo of the request).\",\"examples\":[\"example\"]}},\"description\":\"Result of the CreateModuleUpdatePolicy operation.\",\"examples\":[{\"created\":true,\"name\":\"example\"}],\"required\":[\"created\",\"name\"],\"additionalProperties\":false}"
+
+const SourcesAPI_ListModuleReleases_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"moduleName\":{\"type\":\"string\",\"description\":\"Required filter: only releases with labels[\\\"module\\\"] equal to this value are returned.\",\"examples\":[\"deckhouse\",\"console\"],\"minLength\":1},\"phase\":{\"type\":[\"string\",\"null\"],\"description\":\"Optional filter: restrict results to a specific lifecycle phase (case-sensitive).\",\"examples\":[\"Deployed\"]}},\"description\":\"ListModuleReleasesRequest filters releases by module and optional phase.\",\"examples\":[{\"moduleName\":\"example\",\"phase\":\"example\"}],\"required\":[\"moduleName\"],\"additionalProperties\":false}"
+
+const SourcesAPI_ListModuleReleases_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"releases\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"object\",\"properties\":{\"approved\":{\"type\":\"string\",\"description\":\"Whether the release is approved (spec.approved). Empty string when unset.\",\"examples\":[\"true\",\"false\",\"\"]},\"module\":{\"type\":\"string\",\"description\":\"Owning module name (labels[\\\"module\\\"]).\",\"examples\":[\"deckhouse\"]},\"name\":{\"type\":\"string\",\"description\":\"ModuleRelease resource name (metadata.name).\",\"examples\":[\"deckhouse-1.70.0\"]},\"phase\":{\"type\":\"string\",\"description\":\"Lifecycle phase (status.phase).\",\"examples\":[\"Deployed\",\"Pending\",\"Superseded\",\"Suspended\"]},\"source\":{\"type\":\"string\",\"description\":\"Originating ModuleSource (labels[\\\"source\\\"]).\",\"examples\":[\"deckhouse\"]},\"version\":{\"type\":\"string\",\"description\":\"Module version (spec.version).\",\"examples\":[\"1.70.0\"]}},\"description\":\"ModuleRelease resources matching the requested module and optional phase filter.\\n\\nDeckhouse ModuleRelease resource — a specific version of a module available from a ModuleSource.\",\"examples\":[{\"approved\":\"example\",\"module\":\"example\",\"name\":\"example\",\"phase\":\"example\",\"source\":\"example\",\"version\":\"example\"}],\"required\":[\"name\",\"module\",\"version\",\"source\",\"phase\",\"approved\"],\"additionalProperties\":false},\"description\":\"ModuleRelease resources matching the requested module and optional phase filter.\\n\\nDeckhouse ModuleRelease resource — a specific version of a module available from a ModuleSource.\",\"examples\":[[{\"approved\":\"example\",\"module\":\"example\",\"name\":\"example\",\"phase\":\"example\",\"source\":\"example\",\"version\":\"example\"}]]}},\"description\":\"ListModuleReleasesResponse contains the filtered list of releases.\",\"examples\":[{\"releases\":[{\"approved\":\"example\",\"module\":\"example\",\"name\":\"example\",\"phase\":\"example\",\"source\":\"example\",\"version\":\"example\"}]}],\"additionalProperties\":false}"
+
+const SourcesAPI_DeleteModuleSource_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"force\":{\"type\":[\"boolean\",\"null\"],\"description\":\"When true, skip the safety pre-check for active ModuleRelease resources. Defaults to false. Use with caution: cascade cleanup relies on Deckhouse owner references.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"Name of the ModuleSource to delete.\",\"examples\":[\"custom-modules\"],\"minLength\":1}},\"description\":\"DeleteModuleSourceRequest identifies a ModuleSource to delete.\",\"examples\":[{\"force\":true,\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
+
+const SourcesAPI_DeleteModuleSource_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"deleted\":{\"type\":\"boolean\",\"description\":\"Whether the ModuleSource was successfully deleted.\",\"examples\":[true]},\"message\":{\"type\":\"string\",\"description\":\"Human-readable description of the outcome.\",\"examples\":[\"example\"]}},\"description\":\"Result of the DeleteModuleSource operation.\",\"examples\":[{\"deleted\":true,\"message\":\"example\"}],\"required\":[\"deleted\",\"message\"],\"additionalProperties\":false}"

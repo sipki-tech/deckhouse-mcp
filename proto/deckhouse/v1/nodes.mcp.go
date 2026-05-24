@@ -25,6 +25,7 @@ type NodesAPIToolHandler interface {
 	DrainNode(ctx context.Context, req *DrainNodeRequest) (*DrainNodeResponse, error)
 	DeleteSSHCredentials(ctx context.Context, req *DeleteSSHCredentialsRequest) (*DeleteSSHCredentialsResponse, error)
 	DeleteNodeGroup(ctx context.Context, req *DeleteNodeGroupRequest) (*DeleteNodeGroupResponse, error)
+	CreateNodeGroupConfiguration(ctx context.Context, req *CreateNodeGroupConfigurationRequest) (*CreateNodeGroupConfigurationResponse, error)
 }
 
 // RegisterNodesAPITools registers generated MCP tools for NodesAPI.
@@ -212,6 +213,21 @@ func RegisterNodesAPITools(server *mcp.Server, impl NodesAPIToolHandler, opts ..
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*CreateNodeGroupConfigurationRequest, *CreateNodeGroupConfigurationResponse]{
+		Name:             "CreateNodeGroupConfiguration",
+		Title:            "Create node group configuration",
+		Description:      "Create a NodeGroupConfiguration resource — a bash script that bootstrap-runs on every node in the targeted NodeGroups. Use this for kubelet tuning, custom kernel modules, label/taint application, or any cluster-wide host configuration that cannot be expressed via NodeGroup spec. Already-exists error is returned when a resource with the same name exists.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  NodesAPI_CreateNodeGroupConfiguration_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: NodesAPI_CreateNodeGroupConfiguration_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{},
+		Icons:            nil,
+		NewRequest:       func() *CreateNodeGroupConfigurationRequest { return &CreateNodeGroupConfigurationRequest{} },
+		NewResponse:      func() *CreateNodeGroupConfigurationResponse { return &CreateNodeGroupConfigurationResponse{} },
+		Handler:          impl.CreateNodeGroupConfiguration,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -262,3 +278,7 @@ const NodesAPI_DeleteSSHCredentials_ToolSpecOutputSchemaJSON = "{\"type\":\"obje
 const NodesAPI_DeleteNodeGroup_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name of the NodeGroup resource to delete.\",\"examples\":[\"worker\",\"static-workers\"],\"minLength\":1}},\"description\":\"DeleteNodeGroupRequest contains the NodeGroup name to delete.\",\"examples\":[{\"name\":\"example\"}],\"required\":[\"name\"],\"additionalProperties\":false}"
 
 const NodesAPI_DeleteNodeGroup_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"deleted\":{\"type\":\"boolean\",\"description\":\"Whether the resource was deleted.\",\"examples\":[true]}},\"description\":\"Result of the DeleteNodeGroup operation.\",\"examples\":[{\"deleted\":true}],\"required\":[\"deleted\"],\"additionalProperties\":false}"
+
+const NodesAPI_CreateNodeGroupConfiguration_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Body of the bash script that will execute on every node in the listed node_groups. Should be idempotent.\",\"examples\":[\"#!/bin/bash\\nset -e\\necho ok\"],\"minLength\":1},\"name\":{\"type\":\"string\",\"description\":\"Resource name. Becomes metadata.name; also serves as the script file name on the node (with extension .sh).\",\"examples\":[\"kubelet-tuning\",\"install-cri-tools\"],\"minLength\":1},\"nodeGroups\":{\"type\":[\"array\",\"null\"],\"items\":{\"type\":\"string\",\"description\":\"List of NodeGroup names the script is bound to. Non-empty; non-existent NodeGroups are silently ignored at runtime.\",\"examples\":[\"example\"]},\"description\":\"List of NodeGroup names the script is bound to. Non-empty; non-existent NodeGroups are silently ignored at runtime.\",\"examples\":[\"[\\\"worker\\\", \\\"master\\\"]\"]},\"weight\":{\"type\":[\"integer\",\"null\"],\"description\":\"Execution order weight (lower = earlier). Default: 100. Typical bootstrap scripts use 50-200; cleanup scripts use 900+.\",\"examples\":[-1],\"minimum\":0,\"maximum\":999}},\"description\":\"CreateNodeGroupConfigurationRequest contains parameters for the configuration script.\",\"examples\":[{\"content\":\"example\",\"name\":\"example\",\"nodeGroups\":[\"example\"],\"weight\":-1}],\"required\":[\"name\",\"content\"],\"additionalProperties\":false}"
+
+const NodesAPI_CreateNodeGroupConfiguration_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"created\":{\"type\":\"boolean\",\"description\":\"Whether the NodeGroupConfiguration was successfully created.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"Name of the created NodeGroupConfiguration (echo of the request).\",\"examples\":[\"example\"]}},\"description\":\"Result of the CreateNodeGroupConfiguration operation.\",\"examples\":[{\"created\":true,\"name\":\"example\"}],\"required\":[\"created\",\"name\"],\"additionalProperties\":false}"

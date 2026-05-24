@@ -45,8 +45,13 @@ type mockClient struct {
 
 	listModuleSourcesFunc        func(ctx context.Context) ([]unstructured.Unstructured, error)
 	createModuleSourceFunc       func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	deleteModuleSourceFunc       func(ctx context.Context, name string) error
 	listModuleUpdatePoliciesFunc func(ctx context.Context) ([]unstructured.Unstructured, error)
 	createModuleUpdatePolicyFunc func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+
+	listModuleReleasesFunc           func(ctx context.Context, moduleName string) ([]unstructured.Unstructured, error)
+	createNodeGroupConfigurationFunc func(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	patchModuleConfigFunc            func(ctx context.Context, name string, patch []byte) (*unstructured.Unstructured, error)
 }
 
 func (m *mockClient) ListNodes(ctx context.Context) ([]corev1.Node, error) {
@@ -271,4 +276,32 @@ func (m *mockClient) CreateModuleUpdatePolicy(ctx context.Context, obj *unstruct
 		return m.createModuleUpdatePolicyFunc(ctx, obj)
 	}
 	return obj, nil
+}
+
+func (m *mockClient) DeleteModuleSource(ctx context.Context, name string) error {
+	if m.deleteModuleSourceFunc != nil {
+		return m.deleteModuleSourceFunc(ctx, name)
+	}
+	return nil
+}
+
+func (m *mockClient) ListModuleReleases(ctx context.Context, moduleName string) ([]unstructured.Unstructured, error) {
+	if m.listModuleReleasesFunc != nil {
+		return m.listModuleReleasesFunc(ctx, moduleName)
+	}
+	return nil, nil
+}
+
+func (m *mockClient) CreateNodeGroupConfiguration(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if m.createNodeGroupConfigurationFunc != nil {
+		return m.createNodeGroupConfigurationFunc(ctx, obj)
+	}
+	return obj, nil
+}
+
+func (m *mockClient) PatchModuleConfig(ctx context.Context, name string, patch []byte) (*unstructured.Unstructured, error) {
+	if m.patchModuleConfigFunc != nil {
+		return m.patchModuleConfigFunc(ctx, name, patch)
+	}
+	return nil, nil
 }

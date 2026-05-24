@@ -2,12 +2,15 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/types/known/structpb"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	pb "github.com/sipki-tech/deckhouse-mcp/proto/deckhouse/v1"
 )
@@ -490,5 +493,171 @@ func makeModule(name string, weight int64, source, state string) unstructured.Un
 				"phase": state,
 			},
 		},
+	}
+}
+
+// parseMaintenancePatch decodes a JSON merge patch and returns the value at
+// spec.maintenance. Returns (value, ok) where ok=false when the path is absent.
+func parseMaintenancePatch(t *testing.T, patch []byte) (any, bool) {
+	t.Helper()
+
+	var raw map[string]any
+
+	err := json.Unmarshal(patch, &raw)
+	if err != nil {
+		t.Fatalf("invalid patch JSON: %v", err)
+	}
+
+	spec, ok := raw["spec"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+
+	v, ok := spec["maintenance"]
+
+	return v, ok
+}
+
+func TestSetModuleMaintenance_EnableHappy(t *testing.T) {
+	var capturedName string
+
+	var capturedPatch []byte
+
+	mc := &mockClient{
+		patchModuleConfigFunc: func(_ context.Context, name string, patch []byte) (*unstructured.Unstructured, error) {
+			capturedName = name
+			capturedPatch = patch
+
+			return &unstructured.Unstructured{}, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	resp, err := h.SetModuleMaintenance(context.Background(), &pb.SetModuleMaintenanceRequest{
+		Name:    "cert-manager",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetMaintenanceEnabled() {
+		t.Error("expected maintenance_enabled=true in response")
+	}
+	if resp.GetName() != "cert-manager" {
+		t.Errorf("expected echoed name=cert-manager, got %q", resp.GetName())
+	}
+	if capturedName != "cert-manager" {
+		t.Errorf("expected client called with name=cert-manager, got %q", capturedName)
+	}
+
+	v, ok := parseMaintenancePatch(t, capturedPatch)
+	if !ok {
+		t.Fatal("expected patch to contain spec.maintenance")
+	}
+	if v != "NoResourceReconciliation" {
+		t.Errorf("expected spec.maintenance=NoResourceReconciliation, got %v", v)
+	}
+}
+
+func TestSetModuleMaintenance_DisableHappy(t *testing.T) {
+	var capturedPatch []byte
+	mc := &mockClient{
+		patchModuleConfigFunc: func(_ context.Context, _ string, patch []byte) (*unstructured.Unstructured, error) {
+			capturedPatch = patch
+
+			return &unstructured.Unstructured{}, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	resp, err := h.SetModuleMaintenance(context.Background(), &pb.SetModuleMaintenanceRequest{
+		Name:    "cert-manager",
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetMaintenanceEnabled() {
+		t.Error("expected maintenance_enabled=false in response")
+	}
+
+	v, ok := parseMaintenancePatch(t, capturedPatch)
+	if !ok {
+		t.Fatal("expected patch to contain spec.maintenance key (as null)")
+	}
+	if v != nil {
+		t.Errorf("expected spec.maintenance=null in disable patch, got %v", v)
+	}
+}
+
+func TestSetModuleMaintenance_PatchShape(t *testing.T) {
+	var capturedPatch []byte
+	mc := &mockClient{
+		patchModuleConfigFunc: func(_ context.Context, _ string, patch []byte) (*unstructured.Unstructured, error) {
+			capturedPatch = patch
+
+			return &unstructured.Unstructured{}, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	_, err := h.SetModuleMaintenance(context.Background(), &pb.SetModuleMaintenanceRequest{
+		Name:    "cert-manager",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := `{"spec":{"maintenance":"NoResourceReconciliation"}}`
+	if string(capturedPatch) != expected {
+		t.Errorf("expected patch JSON %q, got %q", expected, string(capturedPatch))
+	}
+}
+
+func TestSetModuleMaintenance_NotFound(t *testing.T) {
+	mc := &mockClient{
+		patchModuleConfigFunc: func(_ context.Context, name string, _ []byte) (*unstructured.Unstructured, error) {
+			return nil, kerrors.NewNotFound(
+				schema.GroupResource{Group: "deckhouse.io", Resource: "moduleconfigs"},
+				name,
+			)
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	_, err := h.SetModuleMaintenance(context.Background(), &pb.SetModuleMaintenanceRequest{
+		Name:    "missing",
+		Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("expected not-found error, got nil")
+	}
+	if !kerrors.IsNotFound(err) {
+		t.Errorf("expected error to preserve IsNotFound semantics, got %v", err)
+	}
+}
+
+func TestSetModuleMaintenance_Idempotent(t *testing.T) {
+	calls := 0
+	mc := &mockClient{
+		patchModuleConfigFunc: func(_ context.Context, _ string, _ []byte) (*unstructured.Unstructured, error) {
+			calls++
+
+			return &unstructured.Unstructured{}, nil
+		},
+	}
+
+	h := NewModulesHandler(mc)
+	req := &pb.SetModuleMaintenanceRequest{Name: "cert-manager", Enabled: true}
+
+	for i := 0; i < 3; i++ {
+		_, err := h.SetModuleMaintenance(context.Background(), req)
+		if err != nil {
+			t.Fatalf("call %d returned unexpected error: %v", i+1, err)
+		}
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 PatchModuleConfig calls (idempotent), got %d", calls)
 	}
 }

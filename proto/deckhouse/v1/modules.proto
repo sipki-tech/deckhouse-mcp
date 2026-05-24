@@ -67,6 +67,15 @@ service ModulesAPI {
       annotations: { read_only_hint: false, idempotent_hint: false }
     };
   }
+
+  // SetModuleMaintenance toggles ModuleConfig.spec.maintenance.
+  rpc SetModuleMaintenance(SetModuleMaintenanceRequest) returns (SetModuleMaintenanceResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Set module maintenance"
+      description: "Pause or resume reconciliation of a Deckhouse module by toggling ModuleConfig.spec.maintenance. When enabled=true, sets spec.maintenance=NoResourceReconciliation — Deckhouse stops applying enable/disable transitions while settings/version updates continue. When enabled=false, removes the field. Idempotent."
+      annotations: { read_only_hint: false, idempotent_hint: true }
+    };
+  }
 }
 
 // ListModuleConfigsRequest contains optional filters.
@@ -233,5 +242,31 @@ message UpdateModuleSettingsResponse {
 
   bool updated = 1 [(mcp.options.v1.field) = {
     description: "Whether the ModuleConfig was successfully updated. False if the merged settings were byte-identical to the existing ones (no-op)."
+  }];
+}
+
+// SetModuleMaintenanceRequest identifies a module and toggles its maintenance state.
+message SetModuleMaintenanceRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "ModuleConfig resource name (same as the module name, e.g. cert-manager)."
+    examples: [{ string_value: "cert-manager" }, { string_value: "ingress-nginx" }]
+    min_length: 1
+  }];
+  bool enabled = 2 [(mcp.options.v1.field) = {
+    description: "When true, set spec.maintenance=NoResourceReconciliation (pauses enable/disable transitions). When false, removes the field."
+  }];
+}
+
+// SetModuleMaintenanceResponse reports the outcome.
+message SetModuleMaintenanceResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the SetModuleMaintenance operation."
+  };
+
+  bool maintenance_enabled = 1 [(mcp.options.v1.field) = {
+    description: "Current state after the call: true means spec.maintenance is set to NoResourceReconciliation."
+  }];
+  string name = 2 [(mcp.options.v1.field) = {
+    description: "Echo of the request name."
   }];
 }
