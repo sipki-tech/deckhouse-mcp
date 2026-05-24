@@ -18,6 +18,7 @@ type ModulesAPIToolHandler interface {
 	DisableModule(ctx context.Context, req *DisableModuleRequest) (*DisableModuleResponse, error)
 	ListModules(ctx context.Context, req *ListModulesRequest) (*ListModulesResponse, error)
 	UpdateModuleSettings(ctx context.Context, req *UpdateModuleSettingsRequest) (*UpdateModuleSettingsResponse, error)
+	SetModuleMaintenance(ctx context.Context, req *SetModuleMaintenanceRequest) (*SetModuleMaintenanceResponse, error)
 }
 
 // RegisterModulesAPITools registers generated MCP tools for ModulesAPI.
@@ -115,6 +116,21 @@ func RegisterModulesAPITools(server *mcp.Server, impl ModulesAPIToolHandler, opt
 	}, opts...); err != nil {
 		return err
 	}
+	if err := mcpruntime.RegisterProtoTool(server, mcpruntime.ToolSpec[*SetModuleMaintenanceRequest, *SetModuleMaintenanceResponse]{
+		Name:             "SetModuleMaintenance",
+		Title:            "Set module maintenance",
+		Description:      "Pause or resume reconciliation of a Deckhouse module by toggling ModuleConfig.spec.maintenance. When enabled=true, sets spec.maintenance=NoResourceReconciliation — Deckhouse stops applying enable/disable transitions while settings/version updates continue. When enabled=false, removes the field. Idempotent.",
+		Namespace:        "deckhouse",
+		InputSchemaJSON:  ModulesAPI_SetModuleMaintenance_ToolSpecInputSchemaJSON,
+		OutputSchemaJSON: ModulesAPI_SetModuleMaintenance_ToolSpecOutputSchemaJSON,
+		Annotations:      &mcp.ToolAnnotations{IdempotentHint: true},
+		Icons:            nil,
+		NewRequest:       func() *SetModuleMaintenanceRequest { return &SetModuleMaintenanceRequest{} },
+		NewResponse:      func() *SetModuleMaintenanceResponse { return &SetModuleMaintenanceResponse{} },
+		Handler:          impl.SetModuleMaintenance,
+	}, opts...); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -141,3 +157,7 @@ const ModulesAPI_ListModules_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"
 const ModulesAPI_UpdateModuleSettings_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name, e.g. cert-manager).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1},\"settings\":{\"type\":\"object\",\"description\":\"Settings document to merge into ModuleConfig.spec.settings using JSON Merge Patch (RFC 7396). Top-level keys absent in this object are preserved; explicit null values remove the corresponding key; new values overwrite existing ones. Must contain at least one field.\",\"examples\":[{\"kind\":\"demo\",\"nested\":{\"ok\":true}}],\"additionalProperties\":true}},\"description\":\"UpdateModuleSettingsRequest carries a partial settings document to merge.\",\"examples\":[{\"name\":\"example\",\"settings\":{\"kind\":\"demo\",\"nested\":{\"ok\":true}}}],\"required\":[\"name\",\"settings\"],\"additionalProperties\":false}"
 
 const ModulesAPI_UpdateModuleSettings_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"updated\":{\"type\":\"boolean\",\"description\":\"Whether the ModuleConfig was successfully updated. False if the merged settings were byte-identical to the existing ones (no-op).\",\"examples\":[true]}},\"description\":\"Result of the UpdateModuleSettings operation.\",\"examples\":[{\"updated\":true}],\"required\":[\"updated\"],\"additionalProperties\":false}"
+
+const ModulesAPI_SetModuleMaintenance_ToolSpecInputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"enabled\":{\"type\":\"boolean\",\"description\":\"When true, set spec.maintenance=NoResourceReconciliation (pauses enable/disable transitions). When false, removes the field.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"ModuleConfig resource name (same as the module name, e.g. cert-manager).\",\"examples\":[\"cert-manager\",\"ingress-nginx\"],\"minLength\":1}},\"description\":\"SetModuleMaintenanceRequest identifies a module and toggles its maintenance state.\",\"examples\":[{\"enabled\":true,\"name\":\"example\"}],\"required\":[\"name\",\"enabled\"],\"additionalProperties\":false}"
+
+const ModulesAPI_SetModuleMaintenance_ToolSpecOutputSchemaJSON = "{\"type\":\"object\",\"properties\":{\"maintenanceEnabled\":{\"type\":\"boolean\",\"description\":\"Current state after the call: true means spec.maintenance is set to NoResourceReconciliation.\",\"examples\":[true]},\"name\":{\"type\":\"string\",\"description\":\"Echo of the request name.\",\"examples\":[\"example\"]}},\"description\":\"Result of the SetModuleMaintenance operation.\",\"examples\":[{\"maintenanceEnabled\":true,\"name\":\"example\"}],\"required\":[\"maintenanceEnabled\",\"name\"],\"additionalProperties\":false}"

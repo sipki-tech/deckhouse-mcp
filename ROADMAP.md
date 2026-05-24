@@ -23,7 +23,7 @@ Handlers are implemented in priority order. Within a phase, dependencies are res
 | P0 — MVP | A1, A2, A5, A7, A9, B1, C1, D1, D2, D4 | ✅ Done (10/10) |
 | P1 — Core Operations | A3, A6, A11, B2, B3, B4, C2, C3, D5, D6, D10, D12, E1 | ✅ Done (13/13) |
 | P2 — Advanced Management | A4, A8, A10, B5, B7, D3, D7, D8, D9, D11, E2, E3, F1, F2, F4, F5 | ✅ Done (16/16) |
-| P3 — Edge Cases | B6, D13, F3, F6 | 0/4 |
+| P3 — Edge Cases | B6, D13, F3, F6 | ✅ Done (4/4) |
 
 ---
 
@@ -62,7 +62,7 @@ All 10 handlers implemented, tested (38 unit tests), and deployed.
 
 - **Proto**: 4 services with 10 RPCs (`diagnostics.proto`, `modules.proto`, `releases.proto`, `nodes.proto`)
 - **k8s.Client**: 9 methods — `ListNodes`, `ListPods`, `ListNodeGroups`, `ListStaticInstances`, `GetStaticInstance`, `CreateStaticInstance`, `ListModuleConfigs`, `ListDeckhouseReleases`, `CreateSSHCredentials`
-- **RBAC**: read `nodes`, `pods`, `nodegroups`, `staticinstances`, `moduleconfigs`, `deckhouserelease`; create `staticinstances`, `sshcredentials`
+- **RBAC**: read `nodes`, `pods`, `nodegroups`, `staticinstances`, `moduleconfigs`, `deckhousereleases`; create `staticinstances`, `sshcredentials`
 
 ---
 
@@ -121,7 +121,7 @@ Unlocks: single-resource detail views, module enable/disable, release approval, 
 | `events` (core) | get, list | Node events (A3) |
 | `pods/log` (core) | get | Deckhouse logs (A11) |
 | `moduleconfigs` (deckhouse.io) | update, patch | Enable/disable module (B3, B4) |
-| `deckhouserelease` (deckhouse.io) | update, patch | Approve release (C3) |
+| `deckhousereleases` (deckhouse.io) | update, patch | Approve release (C3) |
 | `staticinstances` (deckhouse.io) | delete | Delete SI (D5) |
 | `nodegroups` (deckhouse.io) | create | Create NG (D10) |
 | `secrets` (core) | get | Read cluster config (E1) |
@@ -273,4 +273,4 @@ For each handler:
 - [x] **P0 — MVP** (10/10 handlers) — shipped
 - [x] **P1 — Core Operations** (13/13 handlers) — shipped (`feat(p1)`, commit `4a23933`)
 - [x] **P2 — Advanced Management** (16/16 handlers) — shipped (`feat(p2)`, commit `ce83857`)
-- [ ] **P3 — Edge Cases** (0/4 handlers)
+- [x] **P3 — Edge Cases** (4/4 handlers) — shipped (`feat(p3)`)

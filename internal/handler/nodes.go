@@ -17,14 +17,19 @@ import (
 )
 
 const (
-	defaultSSHPort        = 22
-	defaultTimeoutSeconds = 900
-	defaultDrainTimeout   = 300
-	pollInterval          = 30 * time.Second
-	mirrorPodAnnotation   = "kubernetes.io/config.mirror"
+	defaultSSHPort                      = 22
+	defaultTimeoutSeconds               = 900
+	defaultDrainTimeout                 = 300
+	pollInterval                        = 30 * time.Second
+	mirrorPodAnnotation                 = "kubernetes.io/config.mirror"
+	defaultNodeGroupConfigurationWeight = 100
 )
 
-var errPrivateKeyRequired = errors.New("privateKey is required")
+var (
+	errPrivateKeyRequired    = errors.New("privateKey is required")
+	errScriptContentRequired = errors.New("content is required")
+	errNodeGroupsRequired    = errors.New("node_groups must contain at least one entry")
+)
 
 // NodesHandler implements pb.NodesAPIToolHandler.
 type NodesHandler struct {
@@ -514,6 +519,57 @@ func (h *NodesHandler) DeleteSSHCredentials(
 	}
 
 	return &pb.DeleteSSHCredentialsResponse{Deleted: true}, nil
+}
+
+// CreateNodeGroupConfiguration creates a NodeGroupConfiguration resource — a
+// bash script bound to one or more NodeGroups. REQ-3.4: content and
+// node_groups are validated locally before any K8s API call.
+func (h *NodesHandler) CreateNodeGroupConfiguration(
+	ctx context.Context,
+	req *pb.CreateNodeGroupConfigurationRequest,
+) (*pb.CreateNodeGroupConfigurationResponse, error) {
+	if req.GetContent() == "" {
+		return nil, errScriptContentRequired
+	}
+
+	nodeGroups := req.GetNodeGroups()
+	if len(nodeGroups) == 0 {
+		return nil, errNodeGroupsRequired
+	}
+
+	weight := int64(defaultNodeGroupConfigurationWeight)
+	if req.Weight != nil {
+		weight = int64(req.GetWeight())
+	}
+
+	// Proto map repeated string → []any for unstructured.
+	nodeGroupsAny := make([]any, 0, len(nodeGroups))
+	for _, ng := range nodeGroups {
+		nodeGroupsAny = append(nodeGroupsAny, ng)
+	}
+
+	obj := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": deckhouseAPIVersionV1Alpha1,
+		"kind":       "NodeGroupConfiguration",
+		"metadata": map[string]any{
+			"name": req.GetName(),
+		},
+		"spec": map[string]any{
+			"content":    req.GetContent(),
+			"nodeGroups": nodeGroupsAny,
+			"weight":     weight,
+		},
+	}}
+
+	_, err := h.client.CreateNodeGroupConfiguration(ctx, obj)
+	if err != nil {
+		return nil, fmt.Errorf("creating node group configuration %s: %w", req.GetName(), err)
+	}
+
+	return &pb.CreateNodeGroupConfigurationResponse{
+		Created: true,
+		Name:    req.GetName(),
+	}, nil
 }
 
 // DeleteNodeGroup deletes a NodeGroup resource by name.

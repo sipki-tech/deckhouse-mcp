@@ -7,7 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] — P2 — Advanced Management
+## [Unreleased] — P3 — Edge Cases
+
+4 new MCP handlers — module maintenance toggle, node group bootstrap scripts, module source cleanup, module release listing. Brings the tool catalog from 39 (P0+P1+P2) to **43 total**.
+
+### Added
+
+- `deckhouse_ListModuleReleases` (F6, read) — list `ModuleRelease` resources for a given `module_name` with optional `phase` filter; returns `name`, `version`, `phase`, `approved` flag
+- `deckhouse_DeleteModuleSource` (F3, write) — delete `ModuleSource` CRD with safe-by-default pre-check (refuses deletion when any `ModuleRelease.metadata.labels[source]` matches); bypass via explicit `force=true`
+- `deckhouse_CreateNodeGroupConfiguration` (D13, write) — create `NodeGroupConfiguration` CRD (a bash script bound to one or more `NodeGroups`); validates non-empty `content` and `node_groups`; default `weight=100`
+- `deckhouse_SetModuleMaintenance` (B6, write, idempotent) — toggle `ModuleConfig.spec.maintenance`: when `enabled=true` sets `NoResourceReconciliation` (Deckhouse pauses enable/disable transitions while settings/version updates continue); when `enabled=false` removes the field via JSON merge patch `{"spec":{"maintenance":null}}`
+
+### Infrastructure
+
+- Proto: +4 RPCs in `modules.proto`, `nodes.proto`, `sources.proto` (no new proto files)
+- `k8s.Client` interface: +4 methods (`ListModuleReleases`, `DeleteModuleSource`, `CreateNodeGroupConfiguration`, `PatchModuleConfig`)
+- 2 new GVR constants: `ModuleReleaseGVR`, `NodeGroupConfigurationGVR` (deckhouse.io/v1alpha1)
+- `ListModuleReleases` accepts empty `moduleName` to list all (used by F3 source-based pre-check) — non-breaking change
+- Integration CRDs: `modulereleases.deckhouse.io`, `nodegroupconfigurations.deckhouse.io` added to `tests/integration/crds.yaml`
+- Maintenance-mode field name (`spec.maintenance` = `"NoResourceReconciliation"`) confirmed via Deckhouse public docs ([cr.html](https://deckhouse.io/products/kubernetes-platform/documentation/v1/cr.html), module-development docs)
+
+### RBAC (least-privilege additions)
+
+- Read: `modulereleases` (deckhouse.io)
+- Write: `modulesources` delete; `nodegroupconfigurations` create; `moduleconfigs` patch (merged into existing rule alongside `update`)
+
+### Tests
+
+- 18 new unit tests (133 total, up from 115 in P2)
+- Mock `k8s.Client` extended with 4 new function fields
+- All previous P0/P1/P2 tests continue to pass
+- **Bash integration suite extended to all 43 handlers** (58 cases — happy path + targeted error path; cleanup-before/after pattern). Final run on Kind + Deckhouse CE: 49 passed, 0 failed, 9 environment-skipped (`d8-cluster-configuration` secret, Deckhouse validating webhook unreachable, `NodeGroupConfiguration` CRD not in CE, single-node `DrainNode`)
+- New `deckhouse_webhook_reachable` probe in `tests/integration/test.sh` so webhook-dependent tests skip cleanly instead of failing on infra issues
+
+### Fixed
+
+- **Critical**: `DeckhouseReleaseGVR.Resource` was `"deckhouserelease"` (singular) instead of the real CRD plural `"deckhousereleases"`. The dynamic client therefore returned `the server could not find the requested resource` for `ListDeckhouseReleases`, `GetDeckhouseRelease`, `ApproveRelease` and `GetClusterStatus` (which also queries releases). Unit tests didn't catch this — they mock `k8s.Client` and never resolve the GVR. Fixed in `internal/k8s/client.go`, `deploy/rbac.yaml`, `tests/integration/crds.yaml`, plus README/ROADMAP docs.
+- **`CreateModuleUpdatePolicy` was unusable**: Deckhouse's validating webhook requires `spec.moduleReleaseSelector.labelSelector.matchLabels` (non-empty), but the proto/handler never set it. The handler now accepts a required `match_labels` map and rejects empty input with `errMatchLabelsRequired` before the API call. Proto field `match_labels = 3` added to `CreateModuleUpdatePolicyRequest`. Two new unit tests (`Happy` updated, `MissingMatchLabels` added) and matching integration coverage (`test_create_module_update_policy_missing_match_labels`).
+- **`EventInfo.count` schema regression**: relaxed `minimum` from `1` to `0` in `proto/deckhouse/v1/diagnostics.proto`. Events emitted via `events.k8s.io/v1` can carry `count=0` on first occurrence; the previous constraint caused MCP output validation to fail for `GetNode` and `GetNodeEvents` whenever such events were present.
+- **`test_create_module_update_policy` and `test_create_module_update_policy_already_exists`**: now guarded by `deckhouse_webhook_reachable`. The Deckhouse `update-policies` validating webhook intercepts both `create` and `delete` on `moduleupdatepolicies` — without it, leftover resources from previous runs cannot be cleaned up, and the `kubectl delete` cleanup helper inside the tests is also blocked. Skipping rather than failing matches the same pattern used for other webhook-dependent operations (enable/disable module, set module maintenance, approve release).
+
+### CI
+
+- Added `.github/workflows/ci.yml` with three independent jobs on `pull_request` and pushes to `main`:
+  - `lint` — `easyp lint` over all `.proto` files
+  - `test` — `go test ./...` (134 tests)
+  - `build` — `go build ./cmd/deckhouse-mcp`
+- Concurrency group keyed on `github.ref` so superseded runs are cancelled. Permissions limited to `contents: read`. No integration job, no docker, no release automation in scope.
+
+---
+
+## [0.2.0-p2] — P2 — Advanced Management
 
 16 new MCP handlers across 3 batches (read-only, writes, sources). Brings the tool catalog from 23 (P0+P1) to 39 total.
 

@@ -1078,3 +1078,164 @@ func TestDrainNode_Timeout(t *testing.T) {
 		t.Errorf("expected evictedCount=0, got %d", resp.GetEvictedCount())
 	}
 }
+
+func TestCreateNodeGroupConfiguration_Success(t *testing.T) {
+	var captured *unstructured.Unstructured
+	mc := &mockClient{
+		createNodeGroupConfigurationFunc: func(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			captured = obj
+
+			return obj, nil
+		},
+	}
+
+	weight := int32(50)
+	h := NewNodesHandler(mc)
+	resp, err := h.CreateNodeGroupConfiguration(context.Background(), &pb.CreateNodeGroupConfigurationRequest{
+		Name:       "kubelet-tuning",
+		Content:    "#!/bin/bash\nset -e\necho ok",
+		NodeGroups: []string{"worker", "master"},
+		Weight:     &weight,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetCreated() {
+		t.Error("expected created=true")
+	}
+	if resp.GetName() != "kubelet-tuning" {
+		t.Errorf("expected echoed name=kubelet-tuning, got %q", resp.GetName())
+	}
+
+	if captured == nil {
+		t.Fatal("expected CreateNodeGroupConfiguration to be called")
+	}
+	if captured.GetKind() != "NodeGroupConfiguration" {
+		t.Errorf("expected kind=NodeGroupConfiguration, got %q", captured.GetKind())
+	}
+	if captured.GetAPIVersion() != "deckhouse.io/v1alpha1" {
+		t.Errorf("expected apiVersion=deckhouse.io/v1alpha1, got %q", captured.GetAPIVersion())
+	}
+	if captured.GetName() != "kubelet-tuning" {
+		t.Errorf("expected metadata.name=kubelet-tuning, got %q", captured.GetName())
+	}
+
+	spec, ok := captured.Object["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec object, got %#v", captured.Object["spec"])
+	}
+	if got := spec["content"]; got != "#!/bin/bash\nset -e\necho ok" {
+		t.Errorf("expected spec.content to echo request, got %q", got)
+	}
+	if got := spec["weight"]; got != int64(50) {
+		t.Errorf("expected spec.weight=50, got %v (%T)", got, got)
+	}
+	ngs, ok := spec["nodeGroups"].([]any)
+	if !ok {
+		t.Fatalf("expected spec.nodeGroups []any, got %#v", spec["nodeGroups"])
+	}
+	if len(ngs) != 2 || ngs[0] != "worker" || ngs[1] != "master" {
+		t.Errorf("expected spec.nodeGroups=[worker, master], got %v", ngs)
+	}
+}
+
+func TestCreateNodeGroupConfiguration_DefaultWeight(t *testing.T) {
+	var captured *unstructured.Unstructured
+	mc := &mockClient{
+		createNodeGroupConfigurationFunc: func(_ context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			captured = obj
+
+			return obj, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CreateNodeGroupConfiguration(context.Background(), &pb.CreateNodeGroupConfigurationRequest{
+		Name:       "default-weight",
+		Content:    "#!/bin/bash\necho hi",
+		NodeGroups: []string{"worker"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	spec, ok := captured.Object["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec object, got %#v", captured.Object["spec"])
+	}
+	if got := spec["weight"]; got != int64(100) {
+		t.Errorf("expected default spec.weight=100, got %v (%T)", got, got)
+	}
+}
+
+func TestCreateNodeGroupConfiguration_AlreadyExists(t *testing.T) {
+	mc := &mockClient{
+		createNodeGroupConfigurationFunc: func(_ context.Context, _ *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			return nil, errors.NewAlreadyExists(
+				schema.GroupResource{Group: "deckhouse.io", Resource: "nodegroupconfigurations"},
+				"duplicate",
+			)
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CreateNodeGroupConfiguration(context.Background(), &pb.CreateNodeGroupConfigurationRequest{
+		Name:       "duplicate",
+		Content:    "#!/bin/bash",
+		NodeGroups: []string{"worker"},
+	})
+	if err == nil {
+		t.Fatal("expected already-exists error, got nil")
+	}
+	if !errors.IsAlreadyExists(err) {
+		t.Errorf("expected error to preserve IsAlreadyExists semantics, got %v", err)
+	}
+}
+
+func TestCreateNodeGroupConfiguration_EmptyContent(t *testing.T) {
+	called := false
+	mc := &mockClient{
+		createNodeGroupConfigurationFunc: func(_ context.Context, _ *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			called = true
+
+			return nil, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CreateNodeGroupConfiguration(context.Background(), &pb.CreateNodeGroupConfigurationRequest{
+		Name:       "empty-content",
+		Content:    "",
+		NodeGroups: []string{"worker"},
+	})
+	if err == nil {
+		t.Fatal("expected validation error for empty content, got nil")
+	}
+	if called {
+		t.Error("expected k8s.Client to NOT be called when content is empty")
+	}
+}
+
+func TestCreateNodeGroupConfiguration_EmptyNodeGroups(t *testing.T) {
+	called := false
+	mc := &mockClient{
+		createNodeGroupConfigurationFunc: func(_ context.Context, _ *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			called = true
+
+			return nil, nil
+		},
+	}
+
+	h := NewNodesHandler(mc)
+	_, err := h.CreateNodeGroupConfiguration(context.Background(), &pb.CreateNodeGroupConfigurationRequest{
+		Name:       "empty-ngs",
+		Content:    "#!/bin/bash\necho",
+		NodeGroups: nil,
+	})
+	if err == nil {
+		t.Fatal("expected validation error for empty node_groups, got nil")
+	}
+	if called {
+		t.Error("expected k8s.Client to NOT be called when node_groups is empty")
+	}
+}

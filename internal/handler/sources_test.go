@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -220,8 +221,9 @@ func TestCreateModuleUpdatePolicy_Happy(t *testing.T) {
 
 	h := NewSourcesHandler(mc)
 	resp, err := h.CreateModuleUpdatePolicy(context.Background(), &pb.CreateModuleUpdatePolicyRequest{
-		Name:       "auto",
-		UpdateMode: "Auto",
+		Name:        "auto",
+		UpdateMode:  "Auto",
+		MatchLabels: map[string]string{"module": "cert-manager"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -257,6 +259,48 @@ func TestCreateModuleUpdatePolicy_Happy(t *testing.T) {
 	if got := update["mode"]; got != "Auto" {
 		t.Errorf("expected spec.update.mode=Auto, got %v", got)
 	}
+
+	selector, ok := spec["moduleReleaseSelector"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec.moduleReleaseSelector object, got %#v", spec["moduleReleaseSelector"])
+	}
+	labelSelector, ok := selector["labelSelector"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec.moduleReleaseSelector.labelSelector object, got %#v", selector["labelSelector"])
+	}
+	matchLabels, ok := labelSelector["matchLabels"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected matchLabels object, got %#v", labelSelector["matchLabels"])
+	}
+	if got := matchLabels["module"]; got != "cert-manager" {
+		t.Errorf("expected matchLabels[module]=cert-manager, got %v", got)
+	}
+}
+
+func TestCreateModuleUpdatePolicy_MissingMatchLabels(t *testing.T) {
+	var called bool
+	mc := &mockClient{
+		createModuleUpdatePolicyFunc: func(_ context.Context, _ *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+			called = true
+
+			return nil, nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	_, err := h.CreateModuleUpdatePolicy(context.Background(), &pb.CreateModuleUpdatePolicyRequest{
+		Name:       "no-selector",
+		UpdateMode: "Auto",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing match_labels, got nil")
+	}
+	if !stderrors.Is(err, errMatchLabelsRequired) {
+		t.Errorf("expected errMatchLabelsRequired, got %v", err)
+	}
+	if called {
+		t.Error("expected k8s client not to be called when validation fails")
+	}
 }
 
 func TestCreateModuleUpdatePolicy_AlreadyExists(t *testing.T) {
@@ -271,10 +315,298 @@ func TestCreateModuleUpdatePolicy_AlreadyExists(t *testing.T) {
 
 	h := NewSourcesHandler(mc)
 	_, err := h.CreateModuleUpdatePolicy(context.Background(), &pb.CreateModuleUpdatePolicyRequest{
-		Name:       "duplicate",
-		UpdateMode: "Auto",
+		Name:        "duplicate",
+		UpdateMode:  "Auto",
+		MatchLabels: map[string]string{"module": "cert-manager"},
 	})
 	if err == nil {
 		t.Fatal("expected already-exists error, got nil")
+	}
+}
+
+// makeModuleRelease builds a synthetic ModuleRelease fixture with labels.
+func makeModuleRelease(name, module, source, version, phase, approved string) unstructured.Unstructured {
+	spec := map[string]any{
+		"version": version,
+	}
+	if approved != "" {
+		spec["approved"] = approved == "true"
+	}
+
+	return unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "deckhouse.io/v1alpha1",
+		"kind":       "ModuleRelease",
+		"metadata": map[string]any{
+			"name": name,
+			"labels": map[string]any{
+				"module": module,
+				"source": source,
+			},
+		},
+		"spec":   spec,
+		"status": map[string]any{"phase": phase},
+	}}
+}
+
+// strPtr is a tiny helper for taking address of a string literal in tests.
+func strPtr(s string) *string { return &s }
+
+func TestSourcesHandler_ListModuleReleases_Success(t *testing.T) {
+	var capturedModule string
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, moduleName string) ([]unstructured.Unstructured, error) {
+			capturedModule = moduleName
+
+			return []unstructured.Unstructured{
+				makeModuleRelease("deckhouse-1.70.0", "deckhouse", "deckhouse", "1.70.0", "Deployed", "true"),
+				makeModuleRelease("deckhouse-1.71.0", "deckhouse", "deckhouse", "1.71.0", "Pending", ""),
+			}, nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	resp, err := h.ListModuleReleases(context.Background(), &pb.ListModuleReleasesRequest{
+		ModuleName: "deckhouse",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedModule != "deckhouse" {
+		t.Errorf("expected client called with module_name=deckhouse, got %q", capturedModule)
+	}
+	if got := len(resp.GetReleases()); got != 2 {
+		t.Fatalf("expected 2 releases, got %d", got)
+	}
+
+	first := resp.GetReleases()[0]
+	if first.GetName() != "deckhouse-1.70.0" {
+		t.Errorf("expected name=deckhouse-1.70.0, got %q", first.GetName())
+	}
+	if first.GetModule() != "deckhouse" {
+		t.Errorf("expected module=deckhouse, got %q", first.GetModule())
+	}
+	if first.GetVersion() != "1.70.0" {
+		t.Errorf("expected version=1.70.0, got %q", first.GetVersion())
+	}
+	if first.GetSource() != "deckhouse" {
+		t.Errorf("expected source=deckhouse, got %q", first.GetSource())
+	}
+	if first.GetPhase() != "Deployed" {
+		t.Errorf("expected phase=Deployed, got %q", first.GetPhase())
+	}
+	if first.GetApproved() != "true" {
+		t.Errorf("expected approved=true, got %q", first.GetApproved())
+	}
+}
+
+func TestSourcesHandler_ListModuleReleases_PhaseFilter(t *testing.T) {
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			return []unstructured.Unstructured{
+				makeModuleRelease("deckhouse-1.70.0", "deckhouse", "deckhouse", "1.70.0", "Deployed", "true"),
+				makeModuleRelease("deckhouse-1.71.0", "deckhouse", "deckhouse", "1.71.0", "Pending", ""),
+				makeModuleRelease("deckhouse-1.69.0", "deckhouse", "deckhouse", "1.69.0", "Superseded", "true"),
+			}, nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	resp, err := h.ListModuleReleases(context.Background(), &pb.ListModuleReleasesRequest{
+		ModuleName: "deckhouse",
+		Phase:      strPtr("Pending"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := len(resp.GetReleases()); got != 1 {
+		t.Fatalf("expected 1 release after phase filter, got %d", got)
+	}
+	if got := resp.GetReleases()[0].GetPhase(); got != "Pending" {
+		t.Errorf("expected phase=Pending, got %q", got)
+	}
+	if got := resp.GetReleases()[0].GetName(); got != "deckhouse-1.71.0" {
+		t.Errorf("expected deckhouse-1.71.0 (only Pending one), got %q", got)
+	}
+}
+
+func TestSourcesHandler_ListModuleReleases_Empty(t *testing.T) {
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			return nil, nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	resp, err := h.ListModuleReleases(context.Background(), &pb.ListModuleReleasesRequest{
+		ModuleName: "absent",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetReleases() == nil {
+		t.Error("expected non-nil empty slice, got nil")
+	}
+	if got := len(resp.GetReleases()); got != 0 {
+		t.Errorf("expected empty list, got %d", got)
+	}
+}
+
+func TestSourcesHandler_ListModuleReleases_EmptyModuleName(t *testing.T) {
+	called := false
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			called = true
+
+			return nil, nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	_, err := h.ListModuleReleases(context.Background(), &pb.ListModuleReleasesRequest{
+		ModuleName: "",
+	})
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if called {
+		t.Error("expected k8s.Client to NOT be called when module_name is empty")
+	}
+	if err.Error() != "module_name is required" {
+		t.Errorf("expected error %q, got %q", "module_name is required", err.Error())
+	}
+}
+
+// boolPtr is a tiny helper for taking address of a bool literal in tests.
+func boolPtr(b bool) *bool { return &b }
+
+func TestSourcesHandler_DeleteModuleSource_NoActiveReleases(t *testing.T) {
+	listCalls := 0
+	deleteCalled := false
+	deletedName := ""
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, moduleName string) ([]unstructured.Unstructured, error) {
+			listCalls++
+			if moduleName != "" {
+				t.Errorf("expected empty moduleName for source-based pre-check, got %q", moduleName)
+			}
+
+			return nil, nil
+		},
+		deleteModuleSourceFunc: func(_ context.Context, name string) error {
+			deleteCalled = true
+			deletedName = name
+
+			return nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	resp, err := h.DeleteModuleSource(context.Background(), &pb.DeleteModuleSourceRequest{
+		Name: "custom-modules",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if listCalls != 1 {
+		t.Errorf("expected pre-check ListModuleReleases call count 1, got %d", listCalls)
+	}
+	if !deleteCalled {
+		t.Error("expected DeleteModuleSource to be invoked")
+	}
+	if deletedName != "custom-modules" {
+		t.Errorf("expected delete name=custom-modules, got %q", deletedName)
+	}
+	if !resp.GetDeleted() {
+		t.Error("expected deleted=true")
+	}
+}
+
+func TestSourcesHandler_DeleteModuleSource_BlockedByActiveReleases(t *testing.T) {
+	deleteCalled := false
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			return []unstructured.Unstructured{
+				makeModuleRelease("custom-1.0.0", "custom", "custom-modules", "1.0.0", "Deployed", "true"),
+				makeModuleRelease("other-1.0.0", "other", "other-source", "1.0.0", "Deployed", "true"),
+			}, nil
+		},
+		deleteModuleSourceFunc: func(_ context.Context, _ string) error {
+			deleteCalled = true
+
+			return nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	_, err := h.DeleteModuleSource(context.Background(), &pb.DeleteModuleSourceRequest{
+		Name: "custom-modules",
+	})
+	if err == nil {
+		t.Fatal("expected error blocking deletion, got nil")
+	}
+	if deleteCalled {
+		t.Error("expected DeleteModuleSource NOT to be invoked when active releases exist")
+	}
+}
+
+func TestSourcesHandler_DeleteModuleSource_ForceSkipsPreCheck(t *testing.T) {
+	listCalls := 0
+	deleteCalled := false
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			listCalls++
+
+			return []unstructured.Unstructured{
+				makeModuleRelease("custom-1.0.0", "custom", "custom-modules", "1.0.0", "Deployed", "true"),
+			}, nil
+		},
+		deleteModuleSourceFunc: func(_ context.Context, name string) error {
+			deleteCalled = true
+			if name != "custom-modules" {
+				t.Errorf("expected name=custom-modules, got %q", name)
+			}
+
+			return nil
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	resp, err := h.DeleteModuleSource(context.Background(), &pb.DeleteModuleSourceRequest{
+		Name:  "custom-modules",
+		Force: boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error with force=true: %v", err)
+	}
+	if listCalls != 0 {
+		t.Errorf("expected NO ListModuleReleases call when force=true, got %d calls", listCalls)
+	}
+	if !deleteCalled {
+		t.Error("expected DeleteModuleSource to be invoked when force=true")
+	}
+	if !resp.GetDeleted() {
+		t.Error("expected deleted=true")
+	}
+}
+
+func TestSourcesHandler_DeleteModuleSource_NotFound(t *testing.T) {
+	mc := &mockClient{
+		listModuleReleasesFunc: func(_ context.Context, _ string) ([]unstructured.Unstructured, error) {
+			return nil, nil
+		},
+		deleteModuleSourceFunc: func(_ context.Context, name string) error {
+			return errors.NewNotFound(
+				schema.GroupResource{Group: "deckhouse.io", Resource: "modulesources"},
+				name,
+			)
+		},
+	}
+
+	h := NewSourcesHandler(mc)
+	_, err := h.DeleteModuleSource(context.Background(), &pb.DeleteModuleSourceRequest{
+		Name: "missing",
+	})
+	if err == nil {
+		t.Fatal("expected not-found error, got nil")
 	}
 }

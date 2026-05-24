@@ -53,8 +53,12 @@ type Client interface {
 	ListModules(ctx context.Context) ([]unstructured.Unstructured, error)
 	ListModuleSources(ctx context.Context) ([]unstructured.Unstructured, error)
 	CreateModuleSource(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	DeleteModuleSource(ctx context.Context, name string) error
 	ListModuleUpdatePolicies(ctx context.Context) ([]unstructured.Unstructured, error)
 	CreateModuleUpdatePolicy(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	ListModuleReleases(ctx context.Context, moduleName string) ([]unstructured.Unstructured, error)
+	CreateNodeGroupConfiguration(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+	PatchModuleConfig(ctx context.Context, name string, patch []byte) (*unstructured.Unstructured, error)
 }
 
 // GVR constants for Deckhouse CRDs.
@@ -82,7 +86,7 @@ var (
 	DeckhouseReleaseGVR = schema.GroupVersionResource{
 		Group:    "deckhouse.io",
 		Version:  "v1alpha1",
-		Resource: "deckhouserelease",
+		Resource: "deckhousereleases",
 	}
 	ModuleGVR = schema.GroupVersionResource{
 		Group:    "deckhouse.io",
@@ -98,6 +102,16 @@ var (
 		Group:    "deckhouse.io",
 		Version:  "v1alpha1",
 		Resource: "moduleupdatepolicies",
+	}
+	ModuleReleaseGVR = schema.GroupVersionResource{
+		Group:    "deckhouse.io",
+		Version:  "v1alpha1",
+		Resource: "modulereleases",
+	}
+	NodeGroupConfigurationGVR = schema.GroupVersionResource{
+		Group:    "deckhouse.io",
+		Version:  "v1alpha1",
+		Resource: "nodegroupconfigurations",
 	}
 )
 
@@ -528,4 +542,64 @@ func (c *client) CreateModuleUpdatePolicy(
 	}
 
 	return created, nil
+}
+
+// DeleteModuleSource deletes a ModuleSource resource by name.
+func (c *client) DeleteModuleSource(ctx context.Context, name string) error {
+	err := c.dynamic.Resource(ModuleSourceGVR).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("deleting module source %q: %w", name, err)
+	}
+
+	return nil
+}
+
+// ListModuleReleases returns ModuleRelease resources. When moduleName is
+// non-empty, results are filtered by the label selector "module=<moduleName>".
+// An empty moduleName returns all releases — useful for label-agnostic
+// post-filtering (e.g. by status or labels["source"]).
+func (c *client) ListModuleReleases(
+	ctx context.Context,
+	moduleName string,
+) ([]unstructured.Unstructured, error) {
+	opts := metav1.ListOptions{}
+	if moduleName != "" {
+		opts.LabelSelector = "module=" + moduleName
+	}
+
+	list, err := c.dynamic.Resource(ModuleReleaseGVR).List(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("listing module releases for %q: %w", moduleName, err)
+	}
+
+	return list.Items, nil
+}
+
+// CreateNodeGroupConfiguration creates a NodeGroupConfiguration resource.
+func (c *client) CreateNodeGroupConfiguration(
+	ctx context.Context,
+	obj *unstructured.Unstructured,
+) (*unstructured.Unstructured, error) {
+	created, err := c.dynamic.Resource(NodeGroupConfigurationGVR).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("creating node group configuration: %w", err)
+	}
+
+	return created, nil
+}
+
+// PatchModuleConfig applies a JSON merge patch to a ModuleConfig.
+func (c *client) PatchModuleConfig(
+	ctx context.Context,
+	name string,
+	patch []byte,
+) (*unstructured.Unstructured, error) {
+	obj, err := c.dynamic.Resource(ModuleConfigGVR).Patch(
+		ctx, name, types.MergePatchType, patch, metav1.PatchOptions{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("patching module config %q: %w", name, err)
+	}
+
+	return obj, nil
 }

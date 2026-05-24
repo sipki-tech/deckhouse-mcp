@@ -220,6 +220,20 @@ run_test() {
   esac
 }
 
+# --- Cluster probes -----------------------------------------------------------
+
+# Returns 0 when the deckhouse validating webhook endpoints are populated.
+# The Deckhouse module-configs webhook depends on a healthy controller Pod
+# inside d8-system; in long-lived dev clusters it can become unreachable
+# while the rest of the API stays usable. Tests that mutate ModuleConfig
+# objects must probe this before running.
+deckhouse_webhook_reachable() {
+  local endpoints
+  endpoints=$(kubectl --context "$KUBE_CONTEXT" -n d8-system get endpoints deckhouse \
+    -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || echo "")
+  [ -n "$endpoints" ]
+}
+
 # --- Test cases ---------------------------------------------------------------
 
 test_get_cluster_status() {
@@ -432,6 +446,12 @@ test_get_deckhouse_release() {
 }
 
 test_get_cluster_configuration() {
+  # Requires the d8-cluster-configuration secret in kube-system. In CE Kind
+  # clusters this secret is not always provisioned; skip when missing.
+  if ! kubectl --context "$KUBE_CONTEXT" -n kube-system get secret d8-cluster-configuration >/dev/null 2>&1; then
+    echo "SKIP: d8-cluster-configuration secret not provisioned in this cluster"
+    return 77
+  fi
   local result
   result=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetClusterConfiguration") || return 1
 
@@ -460,7 +480,11 @@ test_create_node_group() {
 }
 
 test_enable_module_idempotent() {
-  # Requires the Deckhouse controller to be running (for webhook validation).
+  # Requires the Deckhouse module-configs webhook to be reachable.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse validating webhook unreachable"
+    return 77
+  fi
   local replicas
   replicas=$(kubectl --context "$KUBE_CONTEXT" -n d8-system get deployment deckhouse \
     -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
@@ -478,6 +502,12 @@ test_enable_module_idempotent() {
 }
 
 test_approve_release() {
+  # ApproveRelease patches a DeckhouseRelease, which Deckhouse routes through
+  # its deckhouse-releases validating webhook. Skip if the webhook is down.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse validating webhook unreachable"
+    return 77
+  fi
   # v1.71.0 is in Pending phase — approve it (idempotent if re-run).
   local result
   result=$(mcp_call_tool "$ENDPOINT" "deckhouse_ApproveRelease" '{"version":"v1.71.0"}') || return 1
@@ -538,6 +568,590 @@ test_remove_node_no_static_instance() {
   local raw
   raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_RemoveNode" '{"name":"d8-control-plane"}' 2>&1) || true
   assert_contains "$raw" "not found" "error mentions not found" || return 1
+}
+
+# --- P1 write tests (gap) -----------------------------------------------------
+
+test_disable_module_idempotent() {
+  # Disable -> Enable round-trip on cert-manager. cert-manager is part of the
+  # CE bundle and safe to toggle. Requires the Deckhouse module-configs
+  # validating webhook to be reachable; if not, skip.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse validating webhook unreachable"
+    return 77
+  fi
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_DisableModule" '{"name":"cert-manager"}') || return 1
+  assert_jq "$result" '.previousState | type == "boolean"' "previousState is boolean" || return 1
+
+  # Re-enable to leave the cluster in a known state.
+  mcp_call_tool "$ENDPOINT" "deckhouse_EnableModule" '{"name":"cert-manager"}' >/dev/null 2>&1 || true
+}
+
+# --- P2 read-only tests -------------------------------------------------------
+
+test_get_node_events() {
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetNodeEvents" '{"name":"d8-control-plane"}') || return 1
+
+  assert_jq "$result" '.events | type == "array"' "events is array" || return 1
+}
+
+test_get_node_events_not_found() {
+  # Unknown node — handler returns empty list (no error).
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetNodeEvents" '{"name":"nonexistent-node-xyz"}') || return 1
+
+  assert_jq "$result" '.events | length == 0' "no events for unknown node" || return 1
+}
+
+test_get_pod_logs() {
+  # Use the deckhouse pod itself in d8-system. Discover the actual pod name.
+  # The deckhouse pod has multiple containers — pick the one named "deckhouse".
+  local pod_name
+  pod_name=$(kubectl --context "$KUBE_CONTEXT" -n d8-system get pods \
+    -l app=deckhouse -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -z "$pod_name" ]; then
+    echo "SKIP: no deckhouse pod found"
+    return 77
+  fi
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetPodLogs" \
+    "$(jq -n --arg ns "d8-system" --arg p "$pod_name" '{namespace:$ns, pod:$p, container:"deckhouse", tail:10}')") || return 1
+
+  assert_jq "$result" '.logs | type == "string"' "logs is string" || return 1
+}
+
+test_get_pod_logs_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetPodLogs" \
+    '{"namespace":"d8-system","pod":"nonexistent-pod-xyz","tail":10}' 2>&1) || true
+  assert_contains "$raw" "nonexistent-pod-xyz" "error mentions the pod name" || return 1
+}
+
+test_get_static_instance() {
+  # Create a SI to read back, then clean up.
+  kubectl --context "$KUBE_CONTEXT" delete staticinstances integration-test-get-si --ignore-not-found=true >/dev/null 2>&1 || true
+
+  # Need credentials first.
+  kubectl --context "$KUBE_CONTEXT" delete sshcredentials integration-test-get-si-creds --ignore-not-found=true >/dev/null 2>&1 || true
+  mcp_call_tool "$ENDPOINT" "deckhouse_CreateSSHCredentials" '{
+    "name": "integration-test-get-si-creds",
+    "user": "testuser",
+    "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----"
+  }' >/dev/null 2>&1 || true
+
+  mcp_call_tool "$ENDPOINT" "deckhouse_CreateStaticInstance" '{
+    "name": "integration-test-get-si",
+    "address": "192.168.1.150",
+    "credentialsRef": "integration-test-get-si-creds"
+  }' >/dev/null 2>&1 || true
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetStaticInstance" '{"name":"integration-test-get-si"}') || {
+    kubectl --context "$KUBE_CONTEXT" delete staticinstances integration-test-get-si --ignore-not-found=true >/dev/null 2>&1 || true
+    kubectl --context "$KUBE_CONTEXT" delete sshcredentials integration-test-get-si-creds --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.name == "integration-test-get-si"' "name matches" || return 1
+  assert_jq "$result" '.address == "192.168.1.150"' "address matches" || return 1
+
+  # Cleanup-after.
+  kubectl --context "$KUBE_CONTEXT" delete staticinstances integration-test-get-si --ignore-not-found=true >/dev/null 2>&1 || true
+  kubectl --context "$KUBE_CONTEXT" delete sshcredentials integration-test-get-si-creds --ignore-not-found=true >/dev/null 2>&1 || true
+}
+
+test_get_static_instance_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetStaticInstance" '{"name":"nonexistent-si-xyz"}' 2>&1) || true
+  assert_contains "$raw" "not found" "error mentions not found" || return 1
+}
+
+test_list_modules() {
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_ListModules") || return 1
+
+  # In a real Deckhouse CE cluster there is at least one Module.
+  assert_jq "$result" '.modules | type == "array"' "modules is array" || return 1
+}
+
+test_get_static_cluster_configuration() {
+  # The static-cluster-configuration.yaml key is optional. Accept either
+  # success with valid YAML or a descriptive "not found" error.
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_GetStaticClusterConfiguration" 2>&1) || true
+
+  if echo "$raw" | jq -e '.yaml' >/dev/null 2>&1; then
+    assert_contains "$raw" "StaticClusterConfiguration" "configuration has type" || return 1
+  else
+    # No StaticClusterConfiguration in this cluster — accept the not-found error.
+    assert_contains "$raw" "not found" "error mentions not found" || return 1
+  fi
+}
+
+# --- P2 write tests -----------------------------------------------------------
+
+test_update_module_settings_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_UpdateModuleSettings" '{
+    "name": "nonexistent-module-xyz",
+    "settings": {"key":"value"}
+  }' 2>&1) || true
+  assert_contains "$raw" "nonexistent-module-xyz" "error mentions module name" || return 1
+}
+
+# CordonNode + UncordonNode share state — run as a coupled pair: cordon →
+# verify → uncordon → verify, so the cluster is left in its original state.
+test_cordon_node() {
+  local node_name="d8-control-plane"
+  # Make sure node is uncordoned before the test.
+  kubectl --context "$KUBE_CONTEXT" uncordon "$node_name" >/dev/null 2>&1 || true
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_CordonNode" "$(jq -n --arg n "$node_name" '{name:$n}')") || return 1
+
+  # CordonNodeResponse exposes previousState (was the node already cordoned).
+  assert_jq "$result" '.previousState == false' "node was not cordoned before the call" || return 1
+
+  # Verify with kubectl that the spec.unschedulable is set.
+  local unschedulable
+  unschedulable=$(kubectl --context "$KUBE_CONTEXT" get node "$node_name" \
+    -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo "")
+  if [ "$unschedulable" != "true" ]; then
+    echo "expected node spec.unschedulable=true, got: '$unschedulable'"
+    return 1
+  fi
+}
+
+test_uncordon_node() {
+  local node_name="d8-control-plane"
+  # Pre-cordon so uncordon has work to do.
+  kubectl --context "$KUBE_CONTEXT" cordon "$node_name" >/dev/null 2>&1 || true
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_UncordonNode" "$(jq -n --arg n "$node_name" '{name:$n}')") || return 1
+
+  # UncordonNodeResponse exposes previousState (was the node cordoned before).
+  assert_jq "$result" '.previousState == true' "node was cordoned before the call" || return 1
+
+  # Verify with kubectl that spec.unschedulable is gone.
+  local unschedulable
+  unschedulable=$(kubectl --context "$KUBE_CONTEXT" get node "$node_name" \
+    -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo "")
+  if [ "$unschedulable" = "true" ]; then
+    echo "expected node spec.unschedulable to be unset/false, got: '$unschedulable'"
+    return 1
+  fi
+}
+
+test_drain_node_single_node_protected() {
+  # Single-node Kind: draining the only control-plane is destructive.
+  # We only verify the DrainNode tool is registered and rejects with a
+  # short timeout (so the cluster remains operational). The handler will
+  # cordon the node, attempt eviction (DaemonSets are skipped), and likely
+  # time out. Both timed_out=true and a normal completion are acceptable —
+  # what matters is that the tool returns a structured response.
+  local node_count
+  node_count=$(kubectl --context "$KUBE_CONTEXT" get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$node_count" -lt 2 ]; then
+    echo "SKIP: drain on single-node Kind would destabilise the cluster"
+    # Restore cordon state in case prior cordon test left node cordoned.
+    kubectl --context "$KUBE_CONTEXT" uncordon d8-control-plane >/dev/null 2>&1 || true
+    return 77
+  fi
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_DrainNode" '{
+    "name": "d8-control-plane",
+    "timeoutSeconds": 30
+  }') || return 1
+
+  assert_jq "$result" '.cordoned | type == "boolean"' "cordoned is boolean" || return 1
+  # Restore state.
+  kubectl --context "$KUBE_CONTEXT" uncordon d8-control-plane >/dev/null 2>&1 || true
+}
+
+test_delete_ssh_credentials() {
+  # Pre-create via kubectl (avoids dependency on CreateSSHCredentials test order).
+  local name="integration-test-delete-creds"
+  kubectl --context "$KUBE_CONTEXT" delete sshcredentials "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1alpha2
+kind: SSHCredentials
+metadata:
+  name: ${name}
+spec:
+  user: testuser
+  privateSSHKey: dGVzdA==
+EOF
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteSSHCredentials" "$(jq -n --arg n "$name" '{name:$n}')") || {
+    kubectl --context "$KUBE_CONTEXT" delete sshcredentials "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.deleted == true' "deleted is true" || return 1
+
+  # Verify gone.
+  if kubectl --context "$KUBE_CONTEXT" get sshcredentials "$name" >/dev/null 2>&1; then
+    echo "SSHCredentials still present after delete"
+    return 1
+  fi
+}
+
+test_delete_ssh_credentials_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteSSHCredentials" \
+    '{"name":"nonexistent-creds-xyz"}' 2>&1) || true
+  assert_contains "$raw" "not found" "error mentions not found" || return 1
+}
+
+test_delete_node_group() {
+  local name="integration-test-delete-ng"
+  kubectl --context "$KUBE_CONTEXT" delete nodegroups "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1
+kind: NodeGroup
+metadata:
+  name: ${name}
+spec:
+  nodeType: Static
+EOF
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteNodeGroup" "$(jq -n --arg n "$name" '{name:$n}')") || {
+    kubectl --context "$KUBE_CONTEXT" delete nodegroups "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.deleted == true' "deleted is true" || return 1
+}
+
+test_delete_node_group_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteNodeGroup" \
+    '{"name":"nonexistent-ng-xyz"}' 2>&1) || true
+  assert_contains "$raw" "not found" "error mentions not found" || return 1
+}
+
+test_update_kubernetes_version_invalid_format() {
+  # Reject "abc" — not a MAJOR.MINOR string. Either the handler or the
+  # Deckhouse webhook should refuse it.
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_UpdateKubernetesVersion" \
+    '{"version":"abc"}' 2>&1) || true
+  # We only assert there is *some* error message; the exact wording differs
+  # between handler-side validation and Deckhouse hook rejection.
+  if echo "$raw" | jq -e '.updated' >/dev/null 2>&1; then
+    echo "expected error, got success"
+    return 1
+  fi
+}
+
+test_list_module_sources() {
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_ListModuleSources") || return 1
+  assert_jq "$result" '.sources | type == "array"' "sources is array" || return 1
+}
+
+test_create_module_source() {
+  local name="integration-test-source"
+  kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateModuleSource" "$(jq -n --arg n "$name" '{name:$n, registry:"registry.deckhouse.io/deckhouse/ce/modules"}')") || {
+    kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.created == true' "created is true" || return 1
+  assert_jq "$result" '.name == "integration-test-source"' "name echoed" || return 1
+
+  kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+}
+
+test_create_module_source_already_exists() {
+  local name="integration-test-source-dup"
+  # Pre-create via kubectl to be deterministic.
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1alpha1
+kind: ModuleSource
+metadata:
+  name: ${name}
+spec:
+  registry:
+    repo: registry.deckhouse.io/deckhouse/ce/modules
+EOF
+
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateModuleSource" "$(jq -n --arg n "$name" '{name:$n, registry:"registry.deckhouse.io/deckhouse/ce/modules"}')" 2>&1) || true
+
+  kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  assert_contains "$raw" "already" "error mentions already" || return 1
+}
+
+test_list_module_update_policies() {
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_ListModuleUpdatePolicies") || return 1
+  assert_jq "$result" '.policies | type == "array"' "policies is array" || return 1
+}
+
+test_create_module_update_policy() {
+  # The Deckhouse update-policies validating webhook intercepts BOTH create
+  # and delete on moduleupdatepolicies. Skip when it is unreachable: not only
+  # would the handler call fail, but cleanup of leftover resources from past
+  # runs would also be blocked.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse update-policies webhook unreachable"
+    return 77
+  fi
+  local name="integration-test-policy"
+  kubectl --context "$KUBE_CONTEXT" delete moduleupdatepolicies "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  local params
+  params=$(jq -n --arg n "$name" '{
+    name: $n,
+    updateMode: "Manual",
+    matchLabels: {"module": "integration-test"}
+  }')
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateModuleUpdatePolicy" "$params") || {
+    kubectl --context "$KUBE_CONTEXT" delete moduleupdatepolicies "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.created == true' "created is true" || return 1
+  assert_jq "$result" '.name == "integration-test-policy"' "name echoed" || return 1
+
+  # Verify the matchLabels round-trip via kubectl.
+  local got_label
+  got_label=$(kubectl --context "$KUBE_CONTEXT" get moduleupdatepolicy "$name" \
+    -o jsonpath='{.spec.moduleReleaseSelector.labelSelector.matchLabels.module}' 2>/dev/null || echo "")
+  if [ "$got_label" != "integration-test" ]; then
+    echo "  ASSERT FAILED: spec.moduleReleaseSelector.labelSelector.matchLabels.module = '$got_label', expected 'integration-test'" >&2
+    kubectl --context "$KUBE_CONTEXT" delete moduleupdatepolicies "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  kubectl --context "$KUBE_CONTEXT" delete moduleupdatepolicies "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+}
+
+test_create_module_update_policy_missing_match_labels() {
+  # Without matchLabels the handler short-circuits with errMatchLabelsRequired
+  # before reaching the API server.
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateModuleUpdatePolicy" \
+    '{"name":"integration-test-no-selector","updateMode":"Auto"}' 2>&1) || true
+
+  assert_contains "$raw" "match_labels is required" "error mentions match_labels is required" || return 1
+}
+
+test_create_module_update_policy_already_exists() {
+  # Same webhook dependency as test_create_module_update_policy.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse update-policies webhook unreachable"
+    return 77
+  fi
+  local name="integration-test-policy-dup"
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1alpha1
+kind: ModuleUpdatePolicy
+metadata:
+  name: ${name}
+spec:
+  update:
+    mode: Manual
+  moduleReleaseSelector:
+    labelSelector:
+      matchLabels:
+        module: integration-test
+EOF
+
+  local params
+  params=$(jq -n --arg n "$name" '{
+    name: $n,
+    updateMode: "Manual",
+    matchLabels: {"module": "integration-test"}
+  }')
+
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateModuleUpdatePolicy" "$params" 2>&1) || true
+
+  kubectl --context "$KUBE_CONTEXT" delete moduleupdatepolicies "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  assert_contains "$raw" "already" "error mentions already" || return 1
+}
+
+# --- P3 tests -----------------------------------------------------------------
+
+test_set_module_maintenance_enable_disable() {
+  # Enter maintenance, exit maintenance — verifies both branches and the
+  # round-trip leaves the cluster in its original state. Requires the
+  # Deckhouse module-configs webhook to be reachable.
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse validating webhook unreachable"
+    return 77
+  fi
+
+  local module="cert-manager"
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_SetModuleMaintenance" "$(jq -n --arg n "$module" '{name:$n, enabled:true}')") || return 1
+  assert_jq "$result" '.maintenanceEnabled == true' "maintenance enabled" || return 1
+
+  # Verify spec.maintenance is set on the cluster.
+  local field
+  field=$(kubectl --context "$KUBE_CONTEXT" get moduleconfig "$module" \
+    -o jsonpath='{.spec.maintenance}' 2>/dev/null || echo "")
+  if [ "$field" != "NoResourceReconciliation" ]; then
+    echo "expected spec.maintenance=NoResourceReconciliation, got: '$field'"
+    return 1
+  fi
+
+  # Disable: spec.maintenance should be removed.
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_SetModuleMaintenance" "$(jq -n --arg n "$module" '{name:$n, enabled:false}')") || return 1
+  assert_jq "$result" '.maintenanceEnabled == false' "maintenance disabled" || return 1
+
+  field=$(kubectl --context "$KUBE_CONTEXT" get moduleconfig "$module" \
+    -o jsonpath='{.spec.maintenance}' 2>/dev/null || echo "")
+  if [ -n "$field" ]; then
+    echo "expected spec.maintenance to be unset, got: '$field'"
+    return 1
+  fi
+}
+
+test_set_module_maintenance_idempotent() {
+  # Two consecutive enable calls should both succeed (server-side merge patch is idempotent).
+  if ! deckhouse_webhook_reachable; then
+    echo "SKIP: deckhouse validating webhook unreachable"
+    return 77
+  fi
+
+  local module="cert-manager"
+
+  mcp_call_tool "$ENDPOINT" "deckhouse_SetModuleMaintenance" "$(jq -n --arg n "$module" '{name:$n, enabled:true}')" >/dev/null || return 1
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_SetModuleMaintenance" "$(jq -n --arg n "$module" '{name:$n, enabled:true}')") || return 1
+  assert_jq "$result" '.maintenanceEnabled == true' "second call still reports enabled=true" || return 1
+
+  # Cleanup: leave maintenance off.
+  mcp_call_tool "$ENDPOINT" "deckhouse_SetModuleMaintenance" "$(jq -n --arg n "$module" '{name:$n, enabled:false}')" >/dev/null || true
+}
+
+test_create_node_group_configuration() {
+  if ! kubectl --context "$KUBE_CONTEXT" get crd nodegroupconfigurations.deckhouse.io >/dev/null 2>&1; then
+    echo "SKIP: NodeGroupConfiguration CRD not installed in this cluster"
+    return 77
+  fi
+
+  local name="integration-test-ngc"
+  kubectl --context "$KUBE_CONTEXT" delete nodegroupconfigurations "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  local params
+  params=$(jq -n --arg n "$name" '{
+    name: $n,
+    content: "#!/bin/bash\necho ok",
+    nodeGroups: ["worker"],
+    weight: 200
+  }')
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateNodeGroupConfiguration" "$params") || {
+    kubectl --context "$KUBE_CONTEXT" delete nodegroupconfigurations "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.created == true' "created is true" || return 1
+  assert_jq "$result" '.name == "integration-test-ngc"' "name echoed" || return 1
+
+  kubectl --context "$KUBE_CONTEXT" delete nodegroupconfigurations "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+}
+
+test_create_node_group_configuration_already_exists() {
+  if ! kubectl --context "$KUBE_CONTEXT" get crd nodegroupconfigurations.deckhouse.io >/dev/null 2>&1; then
+    echo "SKIP: NodeGroupConfiguration CRD not installed in this cluster"
+    return 77
+  fi
+
+  local name="integration-test-ngc-dup"
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1alpha1
+kind: NodeGroupConfiguration
+metadata:
+  name: ${name}
+spec:
+  content: "#!/bin/bash\necho hello"
+  nodeGroups: ["worker"]
+  weight: 100
+EOF
+
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_CreateNodeGroupConfiguration" \
+    "$(jq -n --arg n "$name" '{name:$n, content:"#!/bin/bash\necho ok", nodeGroups:["worker"]}')" 2>&1) || true
+
+  kubectl --context "$KUBE_CONTEXT" delete nodegroupconfigurations "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+
+  assert_contains "$raw" "already" "error mentions already" || return 1
+}
+
+test_delete_module_source() {
+  # Create a module source without active releases, then delete via MCP.
+  local name="integration-test-source-del"
+  cat <<EOF | kubectl --context "$KUBE_CONTEXT" apply -f - >/dev/null 2>&1
+apiVersion: deckhouse.io/v1alpha1
+kind: ModuleSource
+metadata:
+  name: ${name}
+spec:
+  registry:
+    repo: registry.deckhouse.io/deckhouse/ce/modules
+EOF
+
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteModuleSource" "$(jq -n --arg n "$name" '{name:$n}')") || {
+    kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+    return 1
+  }
+
+  assert_jq "$result" '.deleted == true' "deleted is true" || return 1
+
+  # Defensive cleanup if the handler somehow returned success without deleting.
+  kubectl --context "$KUBE_CONTEXT" delete modulesources "$name" --ignore-not-found=true >/dev/null 2>&1 || true
+}
+
+test_delete_module_source_not_found() {
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_DeleteModuleSource" \
+    '{"name":"nonexistent-source-xyz"}' 2>&1) || true
+  assert_contains "$raw" "not found" "error mentions not found" || return 1
+}
+
+test_list_module_releases() {
+  # Use "deckhouse" as the module name — DeckhouseRelease itself is the
+  # canonical example. In a real CE cluster there will likely be at least
+  # one ModuleRelease for an installed module; if not, an empty array is
+  # also acceptable.
+  local result
+  result=$(mcp_call_tool "$ENDPOINT" "deckhouse_ListModuleReleases" '{"moduleName":"deckhouse"}') || return 1
+  assert_jq "$result" '.releases | type == "array"' "releases is array" || return 1
+}
+
+test_list_module_releases_empty_module_name() {
+  # Required field — handler must reject empty moduleName.
+  local raw
+  raw=$(mcp_call_tool "$ENDPOINT" "deckhouse_ListModuleReleases" '{"moduleName":""}' 2>&1) || true
+  if echo "$raw" | jq -e '.releases' >/dev/null 2>&1; then
+    echo "expected validation error, got success"
+    return 1
+  fi
+  # Either handler error message OR a JSON-RPC validation error is OK.
+  assert_contains "$raw" "module" "error mentions module" || return 1
 }
 
 # --- Main ---------------------------------------------------------------------
@@ -605,6 +1219,55 @@ main() {
 
   run_test test_delete_static_instance
   run_test test_remove_node_no_static_instance
+
+  # P1 gap (added with P3 work).
+  run_test test_disable_module_idempotent
+
+  # --- P2 read-only tests ---
+  echo ""
+  echo "--- P2 read-only tests ---"
+  run_test test_get_node_events
+  run_test test_get_node_events_not_found
+  run_test test_get_pod_logs
+  run_test test_get_pod_logs_not_found
+  run_test test_get_static_instance
+  run_test test_get_static_instance_not_found
+  run_test test_list_modules
+  run_test test_get_static_cluster_configuration
+
+  # --- P2 write tests ---
+  echo ""
+  echo "--- P2 write tests ---"
+  run_test test_update_module_settings_not_found
+  run_test test_cordon_node
+  run_test test_uncordon_node
+  echo ""
+  echo "Note: DrainNode test will run with timeout=30s (or skip on single-node Kind)..."
+  run_test test_drain_node_single_node_protected
+  run_test test_delete_ssh_credentials
+  run_test test_delete_ssh_credentials_not_found
+  run_test test_delete_node_group
+  run_test test_delete_node_group_not_found
+  run_test test_update_kubernetes_version_invalid_format
+  run_test test_list_module_sources
+  run_test test_create_module_source
+  run_test test_create_module_source_already_exists
+  run_test test_list_module_update_policies
+  run_test test_create_module_update_policy
+  run_test test_create_module_update_policy_missing_match_labels
+  run_test test_create_module_update_policy_already_exists
+
+  # --- P3 tests ---
+  echo ""
+  echo "--- P3 tests ---"
+  run_test test_set_module_maintenance_enable_disable
+  run_test test_set_module_maintenance_idempotent
+  run_test test_create_node_group_configuration
+  run_test test_create_node_group_configuration_already_exists
+  run_test test_delete_module_source
+  run_test test_delete_module_source_not_found
+  run_test test_list_module_releases
+  run_test test_list_module_releases_empty_module_name
 
   # Disconnect SSE.
   mcp_disconnect

@@ -119,6 +119,15 @@ service NodesAPI {
       annotations: { destructive_hint: true }
     };
   }
+
+  // CreateNodeGroupConfiguration creates a NodeGroupConfiguration script binding.
+  rpc CreateNodeGroupConfiguration(CreateNodeGroupConfigurationRequest) returns (CreateNodeGroupConfigurationResponse) {
+    option (mcp.options.v1.method) = {
+      title: "Create node group configuration"
+      description: "Create a NodeGroupConfiguration resource — a bash script that bootstrap-runs on every node in the targeted NodeGroups. Use this for kubelet tuning, custom kernel modules, label/taint application, or any cluster-wide host configuration that cannot be expressed via NodeGroup spec. Already-exists error is returned when a resource with the same name exists."
+      annotations: { read_only_hint: false, idempotent_hint: false }
+    };
+  }
 }
 
 // AddWorkerNodeRequest contains parameters for the composite add-node operation.
@@ -497,5 +506,43 @@ message DeleteNodeGroupResponse {
 
   bool deleted = 1 [(mcp.options.v1.field) = {
     description: "Whether the resource was deleted."
+  }];
+}
+
+// CreateNodeGroupConfigurationRequest contains parameters for the configuration script.
+message CreateNodeGroupConfigurationRequest {
+  string name = 1 [(mcp.options.v1.field) = {
+    description: "Resource name. Becomes metadata.name; also serves as the script file name on the node (with extension .sh)."
+    examples: [{ string_value: "kubelet-tuning" }, { string_value: "install-cri-tools" }]
+    min_length: 1
+  }];
+  string content = 2 [(mcp.options.v1.field) = {
+    description: "Body of the bash script that will execute on every node in the listed node_groups. Should be idempotent."
+    examples: [{ string_value: "#!/bin/bash\nset -e\necho ok" }]
+    min_length: 1
+  }];
+  repeated string node_groups = 3 [(mcp.options.v1.field) = {
+    description: "List of NodeGroup names the script is bound to. Non-empty; non-existent NodeGroups are silently ignored at runtime."
+    examples: [{ string_value: "[\"worker\", \"master\"]" }]
+  }];
+  optional int32 weight = 4 [(mcp.options.v1.field) = {
+    description: "Execution order weight (lower = earlier). Default: 100. Typical bootstrap scripts use 50-200; cleanup scripts use 900+."
+    default_value: { integer_value: 100 }
+    minimum: 0
+    maximum: 999
+  }];
+}
+
+// CreateNodeGroupConfigurationResponse reports the outcome of the operation.
+message CreateNodeGroupConfigurationResponse {
+  option (mcp.options.v1.message) = {
+    description: "Result of the CreateNodeGroupConfiguration operation."
+  };
+
+  bool created = 1 [(mcp.options.v1.field) = {
+    description: "Whether the NodeGroupConfiguration was successfully created."
+  }];
+  string name = 2 [(mcp.options.v1.field) = {
+    description: "Name of the created NodeGroupConfiguration (echo of the request)."
   }];
 }

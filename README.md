@@ -119,7 +119,7 @@ Tests use a mock `k8s.Client` with function fields — no external mock librarie
 
 The server runs with least-privilege permissions:
 
-- **Read**: `nodes`, `pods` (core); `nodegroups`, `staticinstances`, `moduleconfigs`, `deckhouserelease` (deckhouse.io CRDs)
+- **Read**: `nodes`, `pods` (core); `nodegroups`, `staticinstances`, `moduleconfigs`, `deckhousereleases` (deckhouse.io CRDs)
 - **Write**: `staticinstances`, `sshcredentials` (create only)
 
 ### Environment Variables

@@ -35,10 +35,11 @@ rules:
       - nodegroups
       - staticinstances
       - moduleconfigs
-      - deckhouserelease
+      - deckhousereleases
       - modules
       - modulesources
       - moduleupdatepolicies
+      - modulereleases
     verbs: ["get", "list"]
   # Deckhouse CRDs — write (P0 handlers)
   - apiGroups: ["deckhouse.io"]
@@ -60,16 +61,25 @@ rules:
   - apiGroups: ["deckhouse.io"]
     resources:
       - moduleconfigs
-    verbs: ["update"]
+    verbs: ["update", "patch"]
   - apiGroups: ["deckhouse.io"]
     resources:
-      - deckhouserelease
+      - deckhousereleases
     verbs: ["patch"]
   # Deckhouse CRDs — write (Batch 3 SourcesAPI)
   - apiGroups: ["deckhouse.io"]
     resources:
       - modulesources
       - moduleupdatepolicies
+    verbs: ["create"]
+  # Deckhouse CRDs — write (P3 edge cases)
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - modulesources
+    verbs: ["delete"]
+  - apiGroups: ["deckhouse.io"]
+    resources:
+      - nodegroupconfigurations
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
